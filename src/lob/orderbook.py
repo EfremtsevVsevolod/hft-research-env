@@ -81,25 +81,24 @@ class OrderBook:
         ask_qty = self.asks.peekitem(0)[1] if self.asks else 0
         return bid_qty, ask_qty
 
-    def midprice_ticks(self) -> int | None:
+    def midprice(self) -> Decimal | None:
         bb = self.best_bid()
         ba = self.best_ask()
         if bb is None or ba is None:
             return None
-        return (bb + ba) // 2
-    
-    def microprice_ticks(self) -> int | None:
-        bb = self.best_bid()
-        ba = self.best_ask()
-        if bb is None or ba is None:
-            return None
+        return self.price_from_ticks(bb + ba) / 2
 
+    def microprice(self) -> Decimal | None:
+        bb = self.best_bid()
+        ba = self.best_ask()
+        if bb is None or ba is None:
+            return None
         bid_qty, ask_qty = self.volume_at_best()
         total = bid_qty + ask_qty
         if total == 0:
             return None
-
-        return (bb * bid_qty + ba * ask_qty) // total
+        # weighted average in tick space, then convert once
+        return self.price_from_ticks(bb * ask_qty + ba * bid_qty) / total
 
     def spread(self) -> int | None:
         bb = self.best_bid()
