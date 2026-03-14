@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sortedcontainers import SortedDict
 
-from .config import SymbolConfig
+from src.config.config import SymbolConfig
 
 
 class OrderBook:
