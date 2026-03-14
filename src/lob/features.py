@@ -76,6 +76,7 @@ class FeatureExtractor:
         self._trade_window = trade_window_ms
 
         self._next_emit: Optional[int] = None
+        self._prev_ts: Optional[int] = None
         self._prev_midprice: Optional[Decimal] = None
 
         self._trades: SortedList[Trade] = SortedList()
@@ -92,11 +93,17 @@ class FeatureExtractor:
 
         Trade buffers are updated on every call regardless of emission.
         """
-        # 1. Initialise grid on first event.
+        # 1. Validate monotonic timestamps.
+        assert self._prev_ts is None or timestamp >= self._prev_ts, (
+            f"timestamps not monotonic: {timestamp} < {self._prev_ts}"
+        )
+        self._prev_ts = timestamp
+
+        # 2. Initialise grid on first event.
         if self._next_emit is None:
             self._next_emit = timestamp
 
-        # 2. Buffer incoming trades and update running sums.
+        # 3. Buffer incoming trades and update running sums.
         if trades:
             for t in trades:
                 self._trades.add(t)
@@ -105,7 +112,7 @@ class FeatureExtractor:
                 else:
                     self._buy_vol += t.quantity
 
-        # 3. Emit only on grid nodes.
+        # 4. Emit only on grid nodes.
         assert timestamp <= self._next_emit, (
             f"missed grid node: expected event at {self._next_emit}, "
             f"got {timestamp}"
