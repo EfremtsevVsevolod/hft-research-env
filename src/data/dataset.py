@@ -49,9 +49,9 @@ class DatasetBuilder:
         """Extract features, validate, and append a row."""
         snap = labelled.snapshot
 
-        # Validate monotonic timestamps.
-        assert self._prev_ts is None or snap.timestamp >= self._prev_ts, (
-            f"timestamps not monotonic: {snap.timestamp} < {self._prev_ts}"
+        # Validate strictly increasing timestamps (snapshots are on distinct grid nodes).
+        assert self._prev_ts is None or snap.timestamp > self._prev_ts, (
+            f"timestamps not strictly increasing: {snap.timestamp} <= {self._prev_ts}"
         )
         self._prev_ts = snap.timestamp
 

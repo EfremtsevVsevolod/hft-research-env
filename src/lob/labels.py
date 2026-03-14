@@ -33,7 +33,7 @@ class LabelBuilder:
 
     Usage::
 
-        lb = LabelBuilder(horizon_ms=200)
+        lb = LabelBuilder(horizon_ms=200, sampling_interval_ms=50)
 
         for snap in snapshots:
             labelled = lb.on_snapshot(snap)
@@ -41,7 +41,11 @@ class LabelBuilder:
                 store(labelled)
     """
 
-    def __init__(self, horizon_ms: int = 200) -> None:
+    def __init__(self, horizon_ms: int = 200, sampling_interval_ms: int = 50) -> None:
+        assert horizon_ms % sampling_interval_ms == 0, (
+            f"horizon_ms ({horizon_ms}) must be a multiple of "
+            f"sampling_interval_ms ({sampling_interval_ms})"
+        )
         self._horizon = horizon_ms
         self._buffer: deque[FeatureSnapshot] = deque()
 
