@@ -49,6 +49,10 @@ class LabelBuilder:
         self._horizon = horizon_ms
         self._buffer: deque[FeatureSnapshot] = deque()
 
+    def reset(self) -> None:
+        """Clear buffered snapshots. Call after a book reset / sequence gap."""
+        self._buffer.clear()
+
     def on_snapshot(self, snap: FeatureSnapshot) -> Optional[LabelledSnapshot]:
         """Process a snapshot and return a labelled pair if horizon elapsed."""
         self._buffer.append(snap)

@@ -13,6 +13,7 @@ import time
 
 import websockets
 
+from .constants import EVENT_DEPTH_UPDATE, EVENT_TRADE
 from .recorder import Recorder
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,9 @@ _BASE_URL = "wss://stream.binance.com:9443/stream"
 
 def _extract_exchange_ts(event_type: str, data: dict) -> int:
     """Pull the exchange timestamp from the raw payload."""
-    if event_type == "depthUpdate":
+    if event_type == EVENT_DEPTH_UPDATE:
         return data["E"]
-    if event_type == "trade":
+    if event_type == EVENT_TRADE:
         return data["T"]
     return data.get("E", 0)
 
@@ -124,9 +125,9 @@ class BinanceStream:
         )
 
         self._msg_count += 1
-        if event_type == "depthUpdate":
+        if event_type == EVENT_DEPTH_UPDATE:
             self._depth_count += 1
-        elif event_type == "trade":
+        elif event_type == EVENT_TRADE:
             self._trade_count += 1
 
         now = time.monotonic()
@@ -136,6 +137,6 @@ class BinanceStream:
                 self._msg_count,
                 self._depth_count,
                 self._trade_count,
-                len(self._recorder._buffer),
+                len(self._recorder),
             )
             self._last_stats_ts = now

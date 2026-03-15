@@ -1,5 +1,7 @@
 .venv/
 .claude/
 __pycache__/
+*.egg-info/
+/data/
 CLAUDE.md
 PROJECT_CONTEXT.md

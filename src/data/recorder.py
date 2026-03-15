@@ -86,6 +86,9 @@ class Recorder:
         self._buffer.clear()
         self._file_start_ts = time.time()
 
+    def __len__(self) -> int:
+        return len(self._buffer)
+
     def close(self) -> None:
         """Flush remaining buffer."""
         self.flush()

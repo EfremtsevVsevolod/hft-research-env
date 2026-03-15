@@ -18,7 +18,7 @@ from .orderbook import OrderBook
 
 class Trade(NamedTuple):
     """A single trade event."""
-    timestamp: int      # exchange timestamp in ms
+    timestamp: int      # recv_ts in ms
     price: Decimal
     quantity: Decimal
     is_buyer_maker: bool  # True → sell aggressor (taker sold)
@@ -72,7 +72,7 @@ class FeatureExtractor:
         sampling_interval_ms: int = 50,
         trade_window_ms: int = 100,
     ) -> None:
-        self._interval = sampling_interval_ms
+        self.interval = sampling_interval_ms
         self._trade_window = trade_window_ms
 
         self._next_emit: Optional[int] = None
@@ -80,6 +80,15 @@ class FeatureExtractor:
         self._prev_midprice: Optional[Decimal] = None
 
         self._trades: SortedList[Trade] = SortedList()
+        self._buy_vol = Decimal(0)
+        self._sell_vol = Decimal(0)
+
+    def reset(self) -> None:
+        """Reset all internal state. Call after a book reset / sequence gap."""
+        self._next_emit = None
+        self._prev_ts = None
+        self._prev_midprice = None
+        self._trades.clear()
         self._buy_vol = Decimal(0)
         self._sell_vol = Decimal(0)
 
@@ -121,7 +130,7 @@ class FeatureExtractor:
             return None
 
         snap = self._sample(timestamp, orderbook)
-        self._next_emit += self._interval
+        self._next_emit += self.interval
         return snap
 
     # ------------------------------------------------------------------

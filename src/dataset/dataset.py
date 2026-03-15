@@ -45,6 +45,13 @@ class DatasetBuilder:
         self._rows: list[dict] = []
         self._prev_ts: int | None = None
 
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def reset_timestamp(self) -> None:
+        """Reset timestamp tracking. Call after a book reset / sequence gap."""
+        self._prev_ts = None
+
     def on_labelled_snapshot(self, labelled: LabelledSnapshot) -> None:
         """Extract features, validate, and append a row."""
         snap = labelled.snapshot

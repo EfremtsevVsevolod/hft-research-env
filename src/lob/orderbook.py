@@ -37,10 +37,14 @@ class OrderBook:
 
     # ---- mutation --------------------------------------------------------
 
-    def apply_snapshot(self, snapshot: dict) -> None:
-        """Reset the book and load a full snapshot."""
+    def clear(self) -> None:
+        """Remove all price levels."""
         self.bids.clear()
         self.asks.clear()
+
+    def apply_snapshot(self, snapshot: dict) -> None:
+        """Reset the book and load a full snapshot."""
+        self.clear()
         for price, qty in snapshot.get("bids", []):
             self.bids[self._to_ticks(price)] = self._to_lots(qty)
         for price, qty in snapshot.get("asks", []):
@@ -106,6 +110,12 @@ class OrderBook:
         if bb is None or ba is None:
             return None
         return ba - bb
+
+    def is_crossed(self) -> bool:
+        """True if best bid >= best ask."""
+        if not self.bids or not self.asks:
+            return False
+        return self.bids.peekitem(-1)[0] >= self.asks.peekitem(0)[0]
 
     def validate(self) -> list[str]:
         """Check structural integrity. Returns list of error strings (empty == ok)."""

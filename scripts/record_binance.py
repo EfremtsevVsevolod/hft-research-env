@@ -11,10 +11,7 @@ import argparse
 import asyncio
 import logging
 import signal
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.data.binance_stream import BinanceStream
 from src.data.recorder import Recorder
