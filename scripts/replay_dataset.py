@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Build an ML dataset by replaying recorded Binance events.
 
-Usage::
-
-    python scripts/replay_dataset.py data/raw/binance/BTCUSDT \\
-        --symbol BTCUSDT --output dataset.parquet
+Usage:
+    python scripts/replay_dataset.py data/raw/binance/BTCUSDT --symbol BTCUSDT --output dataset.parquet
 """
 
 from __future__ import annotations
