@@ -95,17 +95,22 @@ class ReplayEngine:
             df = pd.read_parquet(fpath)
             for row in df.itertuples(index=False):
                 event_type = row.event_type
-                if event_type not in (EVENT_DEPTH_UPDATE, EVENT_TRADE):
-                    continue
-
                 recv_ts = int(row.recv_ts)
                 data = json.loads(row.payload_json)
-                self._event_count += 1
 
                 if event_type == EVENT_TRADE:
                     self._on_trade(recv_ts, data)
-                else:
+                elif event_type == EVENT_DEPTH_UPDATE:
                     self._on_depth(recv_ts, data)
+                else:
+                    raise ValueError(f"Unknown event type: {event_type}")
+                
+                self._event_count += 1
+                if self._event_count % 100_000 == 0:
+                    logger.info(
+                        "Processed %d events, recv_ts=%d, dataset rows=%d",
+                        self._event_count, recv_ts, len(self._db),
+                    )
 
         logger.info(
             "Replay finished: %d events, %d dataset rows, %d sequence gaps",
@@ -136,7 +141,8 @@ class ReplayEngine:
             self.sequence_gaps_detected += 1
             self._reset_book(
                 f"Sequence gap #{self.sequence_gaps_detected}: "
-                f"expected {self._last_update_id + 1}, got U={U}"
+                f"expected {self._last_update_id + 1}, got U={U}, "
+                f"{self._event_count} events processed"
             )
             return
         else:
@@ -171,12 +177,6 @@ class ReplayEngine:
             if snap is not None:
                 self._emit(snap)
             self._next_grid += self._interval
-
-        if self._event_count % 100_000 == 0:
-            logger.info(
-                "Processed %d events, recv_ts=%d, dataset rows=%d",
-                self._event_count, recv_ts, len(self._db),
-            )
 
     def _emit(self, snap: FeatureSnapshot) -> None:
         """Push a snapshot through label builder and dataset builder."""
