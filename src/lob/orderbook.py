@@ -112,10 +112,10 @@ class OrderBook:
         return ba - bb
 
     def is_crossed(self) -> bool:
-        """True if best bid >= best ask."""
+        """True if best bid > best ask (strictly crossed)."""
         if not self.bids or not self.asks:
             return False
-        return self.bids.peekitem(-1)[0] >= self.asks.peekitem(0)[0]
+        return self.bids.peekitem(-1)[0] > self.asks.peekitem(0)[0]
 
     def validate(self) -> list[str]:
         """Check structural integrity. Returns list of error strings (empty == ok)."""
