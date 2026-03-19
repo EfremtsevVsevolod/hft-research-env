@@ -11,7 +11,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from src.config.config import load_symbols
+from src.config.config import fetch_symbol_config
 from src.dataset.dataset import DatasetBuilder
 from src.lob.features import FeatureExtractor
 from src.lob.labels import LabelBuilder
@@ -25,9 +25,9 @@ def main() -> None:
     parser.add_argument("--symbol", required=True, help="Symbol name (e.g. BTCUSDT)")
     parser.add_argument("--output", type=Path, default=Path("dataset.parquet"), help="Output Parquet path")
     parser.add_argument("--warmup", type=int, default=600, help="Warmup seconds (default: 600)")
-    parser.add_argument("--interval", type=int, default=50, help="Sampling interval ms (default: 50)")
+    parser.add_argument("--interval", type=int, default=100, help="Sampling interval ms (default: 100)")
     parser.add_argument("--horizon", type=int, default=200, help="Label horizon ms (default: 200)")
-    parser.add_argument("--trade-window", type=int, default=100, help="Trade window ms (default: 100)")
+    parser.add_argument("--trade-window", type=int, default=1000, help="Trade window ms (default: 1000)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -35,10 +35,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    symbols = load_symbols()
-    if args.symbol not in symbols:
-        raise SystemExit(f"Symbol {args.symbol!r} not found in config/symbols.yaml")
-    cfg = symbols[args.symbol]
+    cfg = fetch_symbol_config(args.symbol)
 
     book = OrderBook(cfg)
     fe = FeatureExtractor(sampling_interval_ms=args.interval, trade_window_ms=args.trade_window)
@@ -54,7 +51,20 @@ def main() -> None:
         warmup_seconds=args.warmup,
     )
     engine.run()
-    db.save_parquet(args.output)
+
+    metadata = {
+        "symbol": args.symbol.upper(),
+        "data_path": str(args.data_path),
+        "interval_ms": args.interval,
+        "horizon_ms": args.horizon,
+        "trade_window_ms": args.trade_window,
+        "warmup_s": args.warmup,
+        "tick_size": str(cfg.tick_size),
+        "step_size": str(cfg.step_size),
+        "rows": len(db),
+        "sequence_gaps": engine.sequence_gaps_detected,
+    }
+    db.save_parquet(args.output, metadata=metadata)
     logging.getLogger(__name__).info("Saved %d rows to %s", len(db), args.output)
 
 
