@@ -6,6 +6,8 @@ from math import isfinite
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from src.lob.labels import LabelledSnapshot
 
@@ -89,6 +91,11 @@ class DatasetBuilder:
         """Return accumulated rows as a DataFrame."""
         return pd.DataFrame(self._rows, columns=_COLUMNS)
 
-    def save_parquet(self, path: Path) -> None:
-        """Save the dataset to a Parquet file."""
-        self.to_dataframe().to_parquet(path, index=False)
+    def save_parquet(self, path: Path, metadata: dict | None = None) -> None:
+        """Save the dataset to a Parquet file with optional metadata."""
+        table = pa.Table.from_pandas(self.to_dataframe())
+        if metadata:
+            existing = table.schema.metadata or {}
+            existing.update({k.encode(): str(v).encode() for k, v in metadata.items()})
+            table = table.replace_schema_metadata(existing)
+        pq.write_table(table, path)
