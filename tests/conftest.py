@@ -83,7 +83,7 @@ class SnapshotSink:
     """
 
     def __init__(self, horizon: int):
-        self._horizon = horizon
+        self.horizon = horizon
         self.snapshots: list = []
 
     def on_snapshot(self, snap):

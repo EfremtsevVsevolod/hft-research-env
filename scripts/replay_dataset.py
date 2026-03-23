@@ -68,7 +68,7 @@ def main() -> None:
         "step_size": str(cfg.step_size),
         "rows": len(db),
         "sequence_gaps": engine.sequence_gaps_detected,
-        "bootstrap_count": engine._bootstrap_count,
+        "bootstrap_count": engine.bootstrap_count,
     }
     db.save_parquet(args.output, metadata=metadata)
     logging.getLogger(__name__).info("Saved %d rows to %s", len(db), args.output)

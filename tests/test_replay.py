@@ -155,7 +155,7 @@ class TestBootstrap:
         ]
         engine, _, book = replay_to_snapshots(cfg, events)
         assert engine.state != "WAIT_SNAPSHOT"
-        assert engine._bootstrap_count == 2
+        assert engine.bootstrap_count == 2
         assert book.best_bid() == 9900   # 99.00
         assert book.best_ask() == 9901   # 99.01
 
@@ -308,7 +308,7 @@ class TestWarmup:
         ]
         engine, snaps, _ = replay_to_snapshots(cfg, events, warmup_s=0.5)
 
-        assert engine._bootstrap_count == 2
+        assert engine.bootstrap_count == 2
         # Snapshots from first bootstrap (warmup ends at grid 600)
         first_boot_snaps = [s for s in snaps if s.timestamp < 700]
         # Snapshots from second bootstrap (warmup ends at grid 1300)

@@ -46,7 +46,7 @@ class LabelBuilder:
             f"horizon_ms ({horizon_ms}) must be a multiple of "
             f"sampling_interval_ms ({sampling_interval_ms})"
         )
-        self._horizon = horizon_ms
+        self.horizon = horizon_ms
         self._buffer: deque[FeatureSnapshot] = deque()
 
     def reset(self) -> None:
@@ -58,7 +58,7 @@ class LabelBuilder:
         self._buffer.append(snap)
 
         past = self._buffer[0]
-        if snap.timestamp - past.timestamp < self._horizon:
+        if snap.timestamp - past.timestamp < self.horizon:
             return None
 
         # past has no midprice — can never be labeled, discard

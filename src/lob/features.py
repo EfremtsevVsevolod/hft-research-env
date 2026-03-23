@@ -43,8 +43,8 @@ class FeatureSnapshot:
 class FeatureExtractor:
     """Causal feature sampler on a regular time grid.
 
-    The caller processes a stream of exchange events.  For each event the
-    caller first mutates the OrderBook, then calls ``on_book_update``.
+    The caller drives the grid by calling ``on_book_update`` at each grid
+    node with the **current** book state and any trades up to that time.
 
     The extractor:
 
@@ -56,15 +56,10 @@ class FeatureExtractor:
     ``sampling_interval_ms``.  The caller must ensure that an event
     (real or synthetic) arrives at every grid node — no gaps.
 
-    Usage::
-
-        fe = FeatureExtractor(sampling_interval_ms=50)
-
-        for ts, depth_dict, trades in stream:
-            book.apply_update(depth_dict)
-            snap = fe.on_book_update(ts, book, trades)
-            if snap is not None:
-                process(snap)
+    In ReplayEngine the book state passed to ``on_book_update`` is the
+    state *before* the depth update that triggered grid emission (emit
+    before apply).  This ensures grid nodes see only causally available
+    data.
     """
 
     def __init__(

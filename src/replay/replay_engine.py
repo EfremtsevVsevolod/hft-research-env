@@ -85,8 +85,8 @@ class ReplayEngine:
         self._db = dataset_builder
         self._interval = feature_extractor.interval
         self._warmup_ms = warmup_seconds * 1000
-        assert label_builder._horizon % feature_extractor.interval == 0, (
-            f"label horizon ({label_builder._horizon}ms) must be a multiple of "
+        assert label_builder.horizon % feature_extractor.interval == 0, (
+            f"label horizon ({label_builder.horizon}ms) must be a multiple of "
             f"sampling interval ({feature_extractor.interval}ms)"
         )
         if self._warmup_ms < feature_extractor.trade_window:
@@ -99,7 +99,7 @@ class ReplayEngine:
         self.state: str = WAIT_SNAPSHOT
         self._last_update_id: Optional[int] = None
         self._snapshot_update_id: Optional[int] = None
-        self._bootstrap_count: int = 0
+        self.bootstrap_count: int = 0
         self._next_grid: Optional[int] = None
         self._warmup_end_ts: Optional[int] = None
         self._trade_buffer: deque[Trade] = deque()
@@ -113,7 +113,7 @@ class ReplayEngine:
         self._book.apply_snapshot({"bids": data["bids"], "asks": data["asks"]})
         self._snapshot_update_id = int(data["lastUpdateId"])
         self._last_update_id = int(data["lastUpdateId"])
-        self._bootstrap_count += 1
+        self.bootstrap_count += 1
         self._next_grid = None
         self._warmup_end_ts = None
         self._fe.reset()
@@ -123,7 +123,7 @@ class ReplayEngine:
         self.state = LIVE if self._warmup_ms == 0 else WARMING
         logger.info(
             "Bootstrap #%d from snapshot lastUpdateId=%d → %s",
-            self._bootstrap_count, self._snapshot_update_id, self.state,
+            self.bootstrap_count, self._snapshot_update_id, self.state,
         )
 
     def _transition_to_wait_snapshot(self, reason: str) -> None:
@@ -168,7 +168,7 @@ class ReplayEngine:
         logger.info(
             "Replay finished: %d events, %d dataset rows, %d sequence gaps, %d bootstraps",
             self._event_count, len(self._db), self.sequence_gaps_detected,
-            self._bootstrap_count,
+            self.bootstrap_count,
         )
 
     def process_event(self, recv_ts: int, event_type: str, data: dict) -> None:
