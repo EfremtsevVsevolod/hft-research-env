@@ -118,12 +118,13 @@ class LabelSink:
 
 # --- replay helpers (3 levels) -----------------------------------------------
 
-def _make_engine(cfg, *, interval, label_builder, dataset_builder):
+def _make_engine(cfg, *, interval, label_builder, dataset_builder, warmup_s=0):
     book = OrderBook(cfg)
     fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
     engine = ReplayEngine(
         data_path=Path("/unused"), order_book=book, feature_extractor=fe,
         label_builder=label_builder, dataset_builder=dataset_builder,
+        warmup_seconds=warmup_s,
     )
     return engine, book
 
@@ -134,30 +135,30 @@ def _feed(engine, events):
         engine.process_event(recv_ts, event_type, data)
 
 
-def replay_to_snapshots(cfg, events, *, interval=100):
+def replay_to_snapshots(cfg, events, *, interval=100, warmup_s=0):
     """Replay → FeatureSnapshots only. No labeling, no dataset."""
     sink = SnapshotSink(horizon=interval)
     engine, book = _make_engine(cfg, interval=interval, label_builder=sink,
-                                dataset_builder=LabelSink())
+                                dataset_builder=LabelSink(), warmup_s=warmup_s)
     _feed(engine, events)
     return engine, sink.snapshots, book
 
 
-def replay_to_labels(cfg, events, *, interval=100, horizon=200):
+def replay_to_labels(cfg, events, *, interval=100, horizon=200, warmup_s=0):
     """Replay → LabelledSnapshots. No dataset filtering."""
     lb = LabelBuilder(horizon_ms=horizon, sampling_interval_ms=interval)
     sink = LabelSink()
     engine, book = _make_engine(cfg, interval=interval, label_builder=lb,
-                                dataset_builder=sink)
+                                dataset_builder=sink, warmup_s=warmup_s)
     _feed(engine, events)
     return engine, sink.labelled, book
 
 
-def replay_to_dataset(cfg, events, *, interval=100, horizon=200):
+def replay_to_dataset(cfg, events, *, interval=100, horizon=200, warmup_s=0):
     """Replay → full pipeline → DatasetBuilder DataFrame."""
     lb = LabelBuilder(horizon_ms=horizon, sampling_interval_ms=interval)
     db = DatasetBuilder()
     engine, book = _make_engine(cfg, interval=interval, label_builder=lb,
-                                dataset_builder=db)
+                                dataset_builder=db, warmup_s=warmup_s)
     _feed(engine, events)
     return engine, db, book

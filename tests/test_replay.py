@@ -229,6 +229,103 @@ class TestCausalTrades:
         assert float(s.buy_volume) == pytest.approx(0.50)
 
 
+# --- warmup: feature stabilization (emission suppressed) ----------------------
+
+class TestWarmup:
+    def test_warmup_suppresses_emission(self, cfg):
+        """Warmup=500ms, interval=100ms. Snapshot at t=50, first depth t=100.
+        Grid starts at 100, warmup ends at grid_ts >= 600.
+        No snapshots emitted before grid 600.
+        """
+        events = [
+            _default_snapshot(50, 0),
+            _depth(100, 1, [], [], U=1),
+            *[_depth(100 + i * 100, 1 + i, [], []) for i in range(1, 11)],
+        ]
+        _, snaps, _ = replay_to_snapshots(cfg, events, warmup_s=0.5)
+
+        timestamps = [s.timestamp for s in snaps]
+        assert len(timestamps) > 0
+        assert min(timestamps) == 600
+        assert all(t >= 600 for t in timestamps)
+        assert all(t % 100 == 0 for t in timestamps)
+
+    def test_warmup_zero_emits_immediately(self, cfg):
+        """warmup_s=0 must emit from first grid node."""
+        events = [
+            _default_snapshot(50, 0),
+            _depth(100, 1, [], [], U=1),
+            _depth(200, 2, [], []),
+            _depth(300, 3, [], []),
+        ]
+        _, snaps, _ = replay_to_snapshots(cfg, events, warmup_s=0)
+
+        timestamps = [s.timestamp for s in snaps]
+        assert 100 in timestamps
+
+    def test_warmup_book_updates_normally(self, cfg):
+        """During warmup, book updates are applied. After warmup, book
+        reflects all updates including those during warmup."""
+        events = [
+            _snapshot(50, 0, [("100.00", "1.00")], [("100.02", "1.00")]),
+            # During warmup: change ask to 100.04
+            _depth(100, 1, [], [("100.02", "0"), ("100.04", "1.00")], U=1),
+            *[_depth(100 + i * 100, 1 + i, [], []) for i in range(1, 8)],
+        ]
+        _, snaps, book = replay_to_snapshots(cfg, events, warmup_s=0.5)
+
+        # Book has the update from t=100 (during warmup)
+        assert book.best_ask() == 10004  # 100.04
+        # First emitted snapshot (after warmup) sees the updated book
+        assert len(snaps) > 0
+        s = snaps[0]
+        assert float(s.spread) == pytest.approx(0.04)
+
+    def test_warmup_feature_state_evolves(self, cfg):
+        """Features computed during warmup must evolve internal state.
+        After warmup, delta_midprice should be relative to the last warmup
+        grid node, not None."""
+        events = [
+            _default_snapshot(50, 0),
+            _depth(100, 1, [], [], U=1),
+            *[_depth(100 + i * 100, 1 + i, [], []) for i in range(1, 8)],
+        ]
+        _, snaps, _ = replay_to_snapshots(cfg, events, warmup_s=0.5)
+
+        # First emitted snapshot: delta_midprice should be 0 (unchanged mid),
+        # not None (which would mean no prior midprice)
+        s = snaps[0]
+        assert s.delta_midprice is not None
+        assert float(s.delta_midprice) == pytest.approx(0.0)
+
+    def test_warmup_resets_on_re_bootstrap(self, cfg):
+        """After gap → new snapshot, warmup restarts. Old warmup progress lost."""
+        events = [
+            _snapshot(50, 5, [("100.00", "1.00")], [("100.01", "1.00")]),
+            _depth(100, 6, [], [], U=6),
+            *[_depth(100 + i * 100, 6 + i, [], []) for i in range(1, 6)],
+            # Gap at t=700
+            _depth(700, 50, [], [], U=40),
+            # Re-bootstrap
+            _snapshot(750, 60, [("99.00", "1.00")], [("99.01", "1.00")]),
+            _depth(800, 61, [], [], U=61),
+            # Need more events for warmup to complete again
+            *[_depth(800 + i * 100, 61 + i, [], []) for i in range(1, 8)],
+        ]
+        engine, snaps, _ = replay_to_snapshots(cfg, events, warmup_s=0.5)
+
+        assert engine._bootstrap_count == 2
+        # Snapshots from first bootstrap (warmup ends at grid 600)
+        first_boot_snaps = [s for s in snaps if s.timestamp < 700]
+        # Snapshots from second bootstrap (warmup ends at grid 1300)
+        second_boot_snaps = [s for s in snaps if s.timestamp >= 750]
+
+        if first_boot_snaps:
+            assert min(s.timestamp for s in first_boot_snaps) >= 600
+        if second_boot_snaps:
+            assert min(s.timestamp for s in second_boot_snaps) >= 1300
+
+
 # --- engine-level: replay state (no output checking) -------------------------
 
 class TestSequenceGap:

@@ -140,14 +140,16 @@ class BinanceStream:
         self._needs_resync = False
 
         # Step 1: Buffer until we have at least one depth event.
+        # Capture recv_ts at actual receipt time to preserve timing fidelity.
         # Note the U of the first depth event.
-        buffer: list[str] = []
+        buffer: list[tuple[int, str]] = []
         first_U: int | None = None
         while first_U is None:
             raw = await ws.recv()
+            recv_ts = time.time_ns() // 1_000_000
             if not self._running:
                 return
-            buffer.append(raw)
+            buffer.append((recv_ts, raw))
             msg = json.loads(raw)
             data = msg.get("data", msg)
             if data.get("e") == EVENT_DEPTH_UPDATE:
@@ -170,11 +172,11 @@ class BinanceStream:
         self._snapshot_update_id = snapshot["lastUpdateId"]
         self._last_update_id = snapshot["lastUpdateId"]
 
-        # Step 4: Process buffered messages (stale diffs filtered).
-        for raw in buffer:
+        # Step 4: Process buffered messages with original recv_ts.
+        for recv_ts, raw in buffer:
             if not self._running:
                 return
-            self._handle_message(raw)
+            self._handle_message(raw, recv_ts=recv_ts)
 
     async def _sync_and_listen(self, ws: websockets.ClientConnection) -> None:
         """Initial sync, then listen. Re-syncs on gap detection."""
@@ -199,8 +201,9 @@ class BinanceStream:
             payload_json=payload_json,
         )
 
-    def _handle_message(self, raw: str) -> None:
-        recv_ts = time.time_ns() // 1_000_000
+    def _handle_message(self, raw: str, *, recv_ts: int | None = None) -> None:
+        if recv_ts is None:
+            recv_ts = time.time_ns() // 1_000_000
 
         try:
             msg = json.loads(raw)

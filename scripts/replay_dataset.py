@@ -24,6 +24,7 @@ def main() -> None:
     parser.add_argument("data_path", type=Path, help="Directory with recorded Parquet files")
     parser.add_argument("--symbol", required=True, help="Symbol name (e.g. BTCUSDT)")
     parser.add_argument("--output", type=Path, help="Output Parquet path")
+    parser.add_argument("--warmup", type=int, default=600, help="Feature warmup seconds after bootstrap (default: 600)")
     parser.add_argument("--interval", type=int, default=100, help="Sampling interval ms (default: 100)")
     parser.add_argument("--horizon", type=int, default=200, help="Label horizon ms (default: 200)")
     parser.add_argument("--trade-window", type=int, default=1000, help="Trade window ms (default: 1000)")
@@ -52,6 +53,7 @@ def main() -> None:
         feature_extractor=fe,
         label_builder=lb,
         dataset_builder=db,
+        warmup_seconds=args.warmup,
     )
     engine.run()
 
@@ -61,6 +63,7 @@ def main() -> None:
         "interval_ms": args.interval,
         "horizon_ms": args.horizon,
         "trade_window_ms": args.trade_window,
+        "warmup_s": args.warmup,
         "tick_size": str(cfg.tick_size),
         "step_size": str(cfg.step_size),
         "rows": len(db),

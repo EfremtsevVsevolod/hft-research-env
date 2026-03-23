@@ -4,7 +4,9 @@ Reads raw Parquet files produced by Recorder, reconstructs the order book
 from depth snapshots, and drives FeatureExtractor → LabelBuilder → DatasetBuilder.
 
 The book is initialized from a depthSnapshot event (REST snapshot stored in the
-recording). No warmup fallback — recordings without snapshots are rejected.
+recording).  After each bootstrap a warmup period lets feature state stabilize
+before snapshots are emitted to labels/dataset.  During warmup the book
+updates normally and features are computed — only emission is suppressed.
 """
 
 from __future__ import annotations
@@ -51,6 +53,10 @@ class ReplayEngine:
         LabelBuilder (determines horizon).
     dataset_builder
         DatasetBuilder to accumulate labelled rows.
+    warmup_seconds
+        Seconds after each bootstrap before feature snapshots are emitted.
+        During warmup the book updates and features are computed normally,
+        but snapshots are not forwarded to labels/dataset.
     """
 
     def __init__(
@@ -60,6 +66,7 @@ class ReplayEngine:
         feature_extractor: FeatureExtractor,
         label_builder: LabelBuilder,
         dataset_builder: DatasetBuilder,
+        warmup_seconds: int = 0,
     ) -> None:
         self._data_path = Path(data_path)
         self._book = order_book
@@ -67,6 +74,7 @@ class ReplayEngine:
         self._lb = label_builder
         self._db = dataset_builder
         self._interval = feature_extractor.interval
+        self._warmup_ms = warmup_seconds * 1000
         assert label_builder._horizon % feature_extractor.interval == 0, (
             f"label horizon ({label_builder._horizon}ms) must be a multiple of "
             f"sampling interval ({feature_extractor.interval}ms)"
@@ -77,6 +85,8 @@ class ReplayEngine:
         self._bootstrapped = False
         self._bootstrap_count: int = 0
         self._next_grid: Optional[int] = None
+        self._warmup_done = False
+        self._warmup_end_ts: Optional[int] = None
         self._trade_buffer: deque[Trade] = deque()
         self._event_count: int = 0
         self.sequence_gaps_detected: int = 0
@@ -91,6 +101,8 @@ class ReplayEngine:
         self._last_update_id = None
         self._bootstrapped = False
         self._next_grid = None
+        self._warmup_done = False
+        self._warmup_end_ts = None
         self._trade_buffer = deque()
 
     def run(self) -> None:
@@ -138,6 +150,8 @@ class ReplayEngine:
         self._bootstrapped = True
         self._bootstrap_count += 1
         self._next_grid = None
+        self._warmup_done = False
+        self._warmup_end_ts = None
         self._fe.reset()
         self._lb.reset()
         self._db.reset_timestamp()
@@ -199,8 +213,9 @@ class ReplayEngine:
         else:
             self._last_update_id = u
 
-        # 2. Emit features BEFORE applying update (causal correctness).
+        # 2. Compute features BEFORE applying update (causal correctness).
         #    Grid nodes use the book state prior to this depth event.
+        #    During warmup features are computed (state evolves) but not emitted.
         if self._next_grid is not None:
             while self._next_grid < recv_ts:
                 causal_trades: list[Trade] = []
@@ -210,7 +225,14 @@ class ReplayEngine:
                     self._next_grid, self._book, causal_trades,
                 )
                 if snap is not None:
-                    self._emit(snap)
+                    if not self._warmup_done and self._next_grid >= self._warmup_end_ts:
+                        self._warmup_done = True
+                        logger.info(
+                            "Warmup complete at grid_ts=%d (%d events processed)",
+                            self._next_grid, self._event_count,
+                        )
+                    if self._warmup_done:
+                        self._emit(snap)
                 self._next_grid += self._interval
 
         # 3. Apply update, then validate.
@@ -220,9 +242,11 @@ class ReplayEngine:
             self._reset("Crossed book detected")
             return
 
-        # 4. Initialize grid on first depth after snapshot.
+        # 4. Initialize grid and warmup deadline on first depth after snapshot.
         if self._next_grid is None:
             self._next_grid = recv_ts - (recv_ts % self._interval)
+            self._warmup_end_ts = self._next_grid + self._warmup_ms
+            self._warmup_done = (self._warmup_ms == 0)
 
     def _emit(self, snap: FeatureSnapshot) -> None:
         """Push a snapshot through label builder and dataset builder."""
