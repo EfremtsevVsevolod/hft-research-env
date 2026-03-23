@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 class ReplayEngine:
     """Replay recorded Binance events through the full feature pipeline.
 
+    All timing uses ``recv_ts`` (local receive time), not ``exchange_ts``.
+    This models what a local system knew at the time it knew it — in a
+    live system you act on data when you receive it, not when the exchange
+    generated it.  ``exchange_ts`` is preserved in raw data for analysis.
+
     Parameters
     ----------
     data_path
@@ -85,7 +90,7 @@ class ReplayEngine:
         self._warmup_done = False
         self._first_ts = None
         self._next_grid = None
-        # self._trade_buffer = deque()  # now better save previous trades
+        self._trade_buffer = deque()
 
     def run(self) -> None:
         """Replay all Parquet files and populate the dataset builder."""
