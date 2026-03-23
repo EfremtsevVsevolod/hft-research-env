@@ -63,6 +63,30 @@ class TestTradeWindow:
         snap = fe.on_book_update(1100, book)
         assert snap.buy_volume == Decimal("0")
 
+    def test_trade_at_window_boundary_included(self, book):
+        """Trade at exactly ts - window is included (eviction uses strict <)."""
+        book.apply_snapshot(make_snapshot(
+            bids=[("100.00", "1.00")], asks=[("100.01", "1.00")],
+        ))
+        fe = FeatureExtractor(sampling_interval_ms=100, trade_window_ms=200)
+        # Trade at 800 = 1000 - 200 (exactly at boundary)
+        boundary_trade = [Trade(timestamp=800, price=Decimal("100.00"),
+                                quantity=Decimal("0.75"), is_buyer_maker=False)]
+        snap = fe.on_book_update(1000, book, boundary_trade)
+        assert snap.buy_volume == Decimal("0.75")
+
+    def test_trade_just_before_boundary_evicted(self, book):
+        """Trade at ts - window - 1 is evicted."""
+        book.apply_snapshot(make_snapshot(
+            bids=[("100.00", "1.00")], asks=[("100.01", "1.00")],
+        ))
+        fe = FeatureExtractor(sampling_interval_ms=100, trade_window_ms=200)
+        # Trade at 799 = 1000 - 200 - 1 (just outside boundary)
+        old_trade = [Trade(timestamp=799, price=Decimal("100.00"),
+                           quantity=Decimal("0.75"), is_buyer_maker=False)]
+        snap = fe.on_book_update(1000, book, old_trade)
+        assert snap.buy_volume == Decimal("0")
+
     def test_sell_volume_from_buyer_maker(self, book):
         book.apply_snapshot(make_snapshot(
             bids=[("100.00", "1.00")], asks=[("100.01", "1.00")],

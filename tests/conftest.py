@@ -49,14 +49,23 @@ def make_trade_payload(price: str, qty: str, is_buyer_maker: bool) -> dict:
     return {"e": "trade", "T": 0, "p": price, "q": qty, "m": is_buyer_maker}
 
 
-# --- stubs for narrow tests --------------------------------------------------
+# --- snapshot lookup helper --------------------------------------------------
+
+def snap_at(snapshots, ts):
+    """Find snapshot with exact timestamp. Raises if not found."""
+    matches = [s for s in snapshots if s.timestamp == ts]
+    assert len(matches) == 1, f"expected 1 snapshot at t={ts}, got {len(matches)}"
+    return matches[0]
+
+
+# --- test sinks --------------------------------------------------------------
 
 class SnapshotSink:
     """Drop-in for LabelBuilder — records snapshots without labeling."""
-    _horizon = 100  # satisfies ReplayEngine assertion
 
-    def __init__(self):
-        self.snapshots = []
+    def __init__(self, interval: int):
+        self._horizon = interval  # satisfies ReplayEngine horizon % interval assertion
+        self.snapshots: list = []
 
     def on_snapshot(self, snap):
         self.snapshots.append(snap)
@@ -84,7 +93,20 @@ class LabelSink:
 
 # --- replay helpers (3 levels) -----------------------------------------------
 
-def _feed_events(engine, events):
+def _make_engine(cfg, *, interval, label_builder, dataset_builder, warmup_s):
+    """Create ReplayEngine with given components."""
+    book = OrderBook(cfg)
+    fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
+    engine = ReplayEngine(
+        data_path=Path("/unused"), order_book=book, feature_extractor=fe,
+        label_builder=label_builder, dataset_builder=dataset_builder,
+        warmup_seconds=warmup_s,
+    )
+    return engine, book
+
+
+def _feed(engine, events):
+    """Feed events through engine's public-facing dispatch."""
     for recv_ts, event_type, data in events:
         if event_type == EVENT_TRADE:
             engine._on_trade(recv_ts, data)
@@ -95,41 +117,28 @@ def _feed_events(engine, events):
 
 def replay_to_snapshots(cfg, events, *, interval=100, warmup_s=0):
     """Replay → FeatureSnapshots only. No labeling, no dataset."""
-    book = OrderBook(cfg)
-    fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
-    sink = SnapshotSink()
-    sink._horizon = interval
-    engine = ReplayEngine(
-        data_path=Path("/unused"), order_book=book, feature_extractor=fe,
-        label_builder=sink, dataset_builder=LabelSink(), warmup_seconds=warmup_s,
-    )
-    _feed_events(engine, events)
+    sink = SnapshotSink(interval)
+    engine, book = _make_engine(cfg, interval=interval, label_builder=sink,
+                                dataset_builder=LabelSink(), warmup_s=warmup_s)
+    _feed(engine, events)
     return engine, sink.snapshots, book
 
 
 def replay_to_labels(cfg, events, *, interval=100, horizon=200, warmup_s=0):
     """Replay → LabelledSnapshots. No dataset filtering."""
-    book = OrderBook(cfg)
-    fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
     lb = LabelBuilder(horizon_ms=horizon, sampling_interval_ms=interval)
     sink = LabelSink()
-    engine = ReplayEngine(
-        data_path=Path("/unused"), order_book=book, feature_extractor=fe,
-        label_builder=lb, dataset_builder=sink, warmup_seconds=warmup_s,
-    )
-    _feed_events(engine, events)
+    engine, book = _make_engine(cfg, interval=interval, label_builder=lb,
+                                dataset_builder=sink, warmup_s=warmup_s)
+    _feed(engine, events)
     return engine, sink.labelled, book
 
 
 def replay_to_dataset(cfg, events, *, interval=100, horizon=200, warmup_s=0):
     """Replay → full pipeline → DatasetBuilder DataFrame."""
-    book = OrderBook(cfg)
-    fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
     lb = LabelBuilder(horizon_ms=horizon, sampling_interval_ms=interval)
     db = DatasetBuilder()
-    engine = ReplayEngine(
-        data_path=Path("/unused"), order_book=book, feature_extractor=fe,
-        label_builder=lb, dataset_builder=db, warmup_seconds=warmup_s,
-    )
-    _feed_events(engine, events)
+    engine, book = _make_engine(cfg, interval=interval, label_builder=lb,
+                                dataset_builder=db, warmup_s=warmup_s)
+    _feed(engine, events)
     return engine, db, book
