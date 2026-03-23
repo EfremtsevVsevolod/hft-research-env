@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -60,12 +61,16 @@ class ReplayEngine:
         self._db = dataset_builder
         self._warmup_ms = warmup_seconds * 1000
         self._interval = feature_extractor.interval
+        assert label_builder._horizon % feature_extractor.interval == 0, (
+            f"label horizon ({label_builder._horizon}ms) must be a multiple of "
+            f"sampling interval ({feature_extractor.interval}ms)"
+        )
 
         self._last_update_id: Optional[int] = None
         self._warmup_done = False
         self._first_ts: Optional[int] = None
         self._next_grid: Optional[int] = None
-        self._trade_buffer: list[Trade] = []
+        self._trade_buffer: deque[Trade] = deque()
         self._event_count: int = 0
         self.sequence_gaps_detected: int = 0
 
@@ -80,7 +85,7 @@ class ReplayEngine:
         self._warmup_done = False
         self._first_ts = None
         self._next_grid = None
-        self._trade_buffer = []
+        # self._trade_buffer = deque()  # now better save previous trades
 
     def run(self) -> None:
         """Replay all Parquet files and populate the dataset builder."""
@@ -128,7 +133,11 @@ class ReplayEngine:
         self._trade_buffer.append(trade)
 
     def _on_depth(self, recv_ts: int, data: dict) -> None:
-        """Validate sequence, apply update, and drive the feature pipeline."""
+        """Validate sequence, emit grid snapshots, then apply update.
+
+        Order of operations ensures causality: grid nodes see only the
+        book state from BEFORE this depth event, matching live behavior.
+        """
         U = int(data["U"])
         u = int(data["u"])
 
@@ -148,14 +157,28 @@ class ReplayEngine:
         else:
             self._last_update_id = u
 
-        # 2. Apply update, then validate — crossed book means corrupted state.
+        # 2. Emit features BEFORE applying update (causal correctness).
+        #    Grid nodes use the book state prior to this depth event.
+        if self._warmup_done:
+            while self._next_grid < recv_ts:
+                causal_trades: list[Trade] = []
+                while self._trade_buffer and self._trade_buffer[0].timestamp <= self._next_grid:
+                    causal_trades.append(self._trade_buffer.popleft())
+                snap = self._fe.on_book_update(
+                    self._next_grid, self._book, causal_trades,
+                )
+                if snap is not None:
+                    self._emit(snap)
+                self._next_grid += self._interval
+
+        # 3. Apply update, then validate.
         self._book.apply_update({"bids": data["b"], "asks": data["a"]})
 
         if self._book.is_crossed():
             self._reset_book("Crossed book detected")
             return
 
-        # 3. Warmup — build the book before extracting features.
+        # 4. Warmup — build the book before extracting features.
         if not self._warmup_done:
             if self._first_ts is None:
                 self._first_ts = recv_ts
@@ -167,16 +190,6 @@ class ReplayEngine:
                 "Warmup complete at recv_ts=%d (%d events processed)",
                 recv_ts, self._event_count,
             )
-
-        # 4. Emit features for all grid nodes up to recv_ts.
-        while self._next_grid <= recv_ts:
-            snap = self._fe.on_book_update(
-                self._next_grid, self._book, self._trade_buffer,
-            )
-            self._trade_buffer = []
-            if snap is not None:
-                self._emit(snap)
-            self._next_grid += self._interval
 
     def _emit(self, snap: FeatureSnapshot) -> None:
         """Push a snapshot through label builder and dataset builder."""
