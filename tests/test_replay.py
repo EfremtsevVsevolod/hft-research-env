@@ -54,12 +54,21 @@ class TestCausalBookState:
             _depth(450, 3, [], []),
         ]
         _, snaps, _ = replay_to_snapshots(cfg, events, warmup_s=0)
+        # Exactly grid nodes 100, 200, 300 emitted (grid < recv_ts for 350 and 450)
+        emitted_ts = [s.timestamp for s in snaps]
+        assert 200 in emitted_ts
+        assert 300 in emitted_ts
+        # No extra timestamps between 100 and 350
+        between = [t for t in emitted_ts if 100 < t < 350]
+        assert between == [200, 300]
+
         s200 = snap_at(snaps, 200)
         s300 = snap_at(snaps, 300)
-        # Both see bid=100.00, ask=100.02 (before t=350 update)
+        # Both see identical book state: bid=100.00, ask=100.02
         assert float(s200.spread) == pytest.approx(0.02)
         assert float(s300.spread) == pytest.approx(0.02)
         assert s200.midprice == s300.midprice
+        assert s200.imbalance_1 == s300.imbalance_1
 
 
 class TestCausalTrades:
@@ -119,18 +128,32 @@ class TestSequenceGap:
         assert engine.sequence_gaps_detected == 1
 
     def test_stale_event_skipped(self, cfg):
-        """Stale event (u < last_update_id) must be a complete no-op."""
-        events = [
+        """Stale event (u < last_update_id) must be a complete no-op:
+        no book change, no reset, no extra snapshots, no gap counter change.
+        """
+        events_before_stale = [
             _depth(100, 10, [("100.00", "1.00")], [("100.01", "1.00")]),
             _depth(200, 11, [("100.00", "2.00")], [("100.01", "1.00")]),
+        ]
+        events_with_stale = [
+            *events_before_stale,
             # Stale: u=9 < last=11. Must not change book.
             _depth(300, 9, [("100.00", "9.00")], [("100.01", "5.00")], U=9),
             _depth(400, 12, [], []),
         ]
-        engine, _, book = replay_to_snapshots(cfg, events, warmup_s=0)
-        assert book.bids[10000] == 200   # valid update, not stale 900
-        assert book.asks[10001] == 100   # unchanged by stale
+        # Run without stale event to get baseline snapshot count
+        _, snaps_baseline, _ = replay_to_snapshots(cfg, [
+            *events_before_stale, _depth(400, 12, [], []),
+        ], warmup_s=0)
+
+        engine, snaps, book = replay_to_snapshots(cfg, events_with_stale, warmup_s=0)
+        # Book unchanged by stale
+        assert book.bids[10000] == 200
+        assert book.asks[10001] == 100
+        # No reset, no gaps
         assert engine.sequence_gaps_detected == 0
+        # Stale event must not produce extra snapshots
+        assert len(snaps) == len(snaps_baseline)
 
 
 class TestCrossedBook:

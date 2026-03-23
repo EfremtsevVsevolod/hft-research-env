@@ -104,28 +104,27 @@ class ReplayEngine:
         for fpath in files:
             df = pd.read_parquet(fpath)
             for row in df.itertuples(index=False):
-                event_type = row.event_type
-                recv_ts = int(row.recv_ts)
-                data = json.loads(row.payload_json)
-
-                if event_type == EVENT_TRADE:
-                    self._on_trade(recv_ts, data)
-                elif event_type == EVENT_DEPTH_UPDATE:
-                    self._on_depth(recv_ts, data)
-                else:
-                    raise ValueError(f"Unknown event type: {event_type}")
-                
-                self._event_count += 1
-                if self._event_count % 100_000 == 0:
-                    logger.info(
-                        "Processed %d events, recv_ts=%d, dataset rows=%d",
-                        self._event_count, recv_ts, len(self._db),
-                    )
+                self.process_event(int(row.recv_ts), row.event_type,json.loads(row.payload_json))
 
         logger.info(
             "Replay finished: %d events, %d dataset rows, %d sequence gaps",
             self._event_count, len(self._db), self.sequence_gaps_detected,
         )
+
+    def process_event(self, recv_ts: int, event_type: str, data: dict) -> None:
+        """Process a single event. Used by run() and available for testing."""
+        if event_type == EVENT_TRADE:
+            self._on_trade(recv_ts, data)
+        elif event_type == EVENT_DEPTH_UPDATE:
+            self._on_depth(recv_ts, data)
+        else:
+            raise ValueError(f"Unknown event type: {event_type}")
+        self._event_count += 1
+        if self._event_count % 100_000 == 0:
+            logger.info(
+                "Processed %d events, recv_ts=%d, dataset rows=%d",
+                self._event_count, recv_ts, len(self._db),
+            )
 
     def _on_trade(self, recv_ts: int, data: dict) -> None:
         """Buffer a trade event."""

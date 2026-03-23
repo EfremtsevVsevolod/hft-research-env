@@ -58,13 +58,19 @@ def snap_at(snapshots, ts):
     return matches[0]
 
 
-# --- test sinks --------------------------------------------------------------
+# --- test sinks (implement expected interfaces explicitly) -------------------
 
 class SnapshotSink:
-    """Drop-in for LabelBuilder — records snapshots without labeling."""
+    """Drop-in for LabelBuilder — records snapshots without labeling.
 
-    def __init__(self, interval: int):
-        self._horizon = interval  # satisfies ReplayEngine horizon % interval assertion
+    Implements the same interface ReplayEngine expects from LabelBuilder:
+      - _horizon (int): checked in __init__ assertion
+      - on_snapshot(snap) -> Optional[LabelledSnapshot]
+      - reset()
+    """
+
+    def __init__(self, horizon: int):
+        self._horizon = horizon
         self.snapshots: list = []
 
     def on_snapshot(self, snap):
@@ -76,10 +82,16 @@ class SnapshotSink:
 
 
 class LabelSink:
-    """Drop-in for DatasetBuilder — records labelled snapshots without filtering."""
+    """Drop-in for DatasetBuilder — records labelled snapshots without filtering.
+
+    Implements the same interface ReplayEngine expects from DatasetBuilder:
+      - on_labelled_snapshot(ls)
+      - reset_timestamp()
+      - __len__()
+    """
 
     def __init__(self):
-        self.labelled = []
+        self.labelled: list = []
 
     def on_labelled_snapshot(self, ls):
         self.labelled.append(ls)
@@ -94,7 +106,6 @@ class LabelSink:
 # --- replay helpers (3 levels) -----------------------------------------------
 
 def _make_engine(cfg, *, interval, label_builder, dataset_builder, warmup_s):
-    """Create ReplayEngine with given components."""
     book = OrderBook(cfg)
     fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
     engine = ReplayEngine(
@@ -106,18 +117,14 @@ def _make_engine(cfg, *, interval, label_builder, dataset_builder, warmup_s):
 
 
 def _feed(engine, events):
-    """Feed events through engine's public-facing dispatch."""
+    """Feed events through engine's public process_event method."""
     for recv_ts, event_type, data in events:
-        if event_type == EVENT_TRADE:
-            engine._on_trade(recv_ts, data)
-        elif event_type == EVENT_DEPTH_UPDATE:
-            engine._on_depth(recv_ts, data)
-        engine._event_count += 1
+        engine.process_event(recv_ts, event_type, data)
 
 
 def replay_to_snapshots(cfg, events, *, interval=100, warmup_s=0):
     """Replay → FeatureSnapshots only. No labeling, no dataset."""
-    sink = SnapshotSink(interval)
+    sink = SnapshotSink(horizon=interval)
     engine, book = _make_engine(cfg, interval=interval, label_builder=sink,
                                 dataset_builder=LabelSink(), warmup_s=warmup_s)
     _feed(engine, events)
