@@ -10,5 +10,8 @@ dependencies = [
     "websockets",
 ]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [tool.setuptools.packages.find]
 include = ["src*"]
