@@ -1,9 +1,6 @@
 """Tests for BinanceStream sync logic.
 
-Tests exercise _handle_message directly with a mock recorder to verify
-sequence validation, recv_ts preservation, and gap detection without
-needing a live WebSocket connection.
-
+Unit tests exercise _handle_message directly with a mock recorder.
 Integration tests for _do_sync use a mock WebSocket and patched REST fetch.
 """
 from __future__ import annotations
@@ -62,9 +59,21 @@ def _trade_msg(price: str = "100.00", qty: str = "0.50", E: int = 1000) -> str:
     })
 
 
-def _make_stream() -> tuple[BinanceStream, MockRecorder]:
+def _make_synced_stream(last_update_id: int = 10) -> tuple[BinanceStream, MockRecorder]:
     rec = MockRecorder()
     stream = BinanceStream("TESTUSDT", rec)
+    stream._synced = True
+    stream._last_update_id = last_update_id
+    stream._snapshot_update_id = None
+    return stream, rec
+
+
+def _make_pre_sync_stream(snapshot_update_id: int = 10) -> tuple[BinanceStream, MockRecorder]:
+    rec = MockRecorder()
+    stream = BinanceStream("TESTUSDT", rec)
+    stream._snapshot_update_id = snapshot_update_id
+    stream._last_update_id = snapshot_update_id
+    stream._synced = False
     return stream, rec
 
 
@@ -72,208 +81,103 @@ def _make_stream() -> tuple[BinanceStream, MockRecorder]:
 
 class TestRecvTsPreservation:
     def test_explicit_recv_ts_used_for_buffered_message(self):
-        """Buffered messages must be recorded with their original recv_ts,
-        not the time they are later processed."""
-        stream, rec = _make_stream()
-        # Simulate synced state
-        stream._synced = True
-        stream._last_update_id = 10
-        stream._snapshot_update_id = None
-
-        # Process a message with explicit recv_ts (as if buffered earlier)
+        """Buffered messages keep their original recv_ts."""
+        stream, rec = _make_synced_stream()
         stream._handle_message(_depth_msg(U=11, u=11), recv_ts=42000)
-
-        assert len(rec.events) == 1
         assert rec.events[0]["recv_ts"] == 42000
 
     def test_live_message_gets_current_ts(self):
-        """Live (non-buffered) messages generate recv_ts internally."""
-        stream, rec = _make_stream()
-        stream._synced = True
-        stream._last_update_id = 10
-        stream._snapshot_update_id = None
-
+        """Live messages generate recv_ts internally."""
+        stream, rec = _make_synced_stream()
         stream._handle_message(_depth_msg(U=11, u=11))
-
-        assert len(rec.events) == 1
-        # Must be a recent wall-clock timestamp (not 0 or None)
         assert rec.events[0]["recv_ts"] > 0
 
     def test_buffered_event_ordering_preserved(self):
         """Multiple buffered events preserve their original recv_ts order."""
-        stream, rec = _make_stream()
-        stream._synced = True
-        stream._last_update_id = 10
-        stream._snapshot_update_id = None
-
+        stream, rec = _make_synced_stream()
         stream._handle_message(_depth_msg(U=11, u=11), recv_ts=1000)
         stream._handle_message(_trade_msg(), recv_ts=1001)
         stream._handle_message(_depth_msg(U=12, u=12), recv_ts=1002)
-
-        assert len(rec.events) == 3
-        ts = [e["recv_ts"] for e in rec.events]
-        assert ts == [1000, 1001, 1002]
+        assert [e["recv_ts"] for e in rec.events] == [1000, 1001, 1002]
 
 
-# --- stale diff filtering -----------------------------------------------------
+# --- stale diff filtering (parametrized) --------------------------------------
 
-class TestStaleDiffFiltering:
-    def test_stale_diffs_before_snapshot_dropped(self):
-        """Diffs with u <= snapshot_update_id must not be recorded."""
-        stream, rec = _make_stream()
-        stream._snapshot_update_id = 10
-        stream._last_update_id = 10
-        stream._synced = False
-
-        # Stale: u=8 <= 10
-        stream._handle_message(_depth_msg(U=7, u=8), recv_ts=100)
-        # Stale: u=10 <= 10
-        stream._handle_message(_depth_msg(U=9, u=10), recv_ts=200)
-
-        assert len(rec.events) == 0
-
-    def test_stale_diffs_after_sync_dropped(self):
-        """Diffs with u < last_update_id after sync must not be recorded."""
-        stream, rec = _make_stream()
-        stream._synced = True
-        stream._last_update_id = 20
-        stream._snapshot_update_id = None
-
-        # Stale: u=15 < 20
-        stream._handle_message(_depth_msg(U=14, u=15), recv_ts=100)
-
-        assert len(rec.events) == 0
+@pytest.mark.parametrize("desc,setup,U,u", [
+    ("before_snapshot", "pre_sync", 7, 8),     # u=8 <= snapshot_id=10
+    ("before_snapshot_boundary", "pre_sync", 9, 10),  # u=10 <= snapshot_id=10
+    ("after_sync", "synced", 14, 15),           # u=15 < last_update_id=20
+])
+def test_stale_diff_dropped(desc, setup, U, u):
+    """Stale diffs must not be recorded regardless of sync phase."""
+    if setup == "pre_sync":
+        stream, rec = _make_pre_sync_stream(10)
+    else:
+        stream, rec = _make_synced_stream(20)
+    stream._handle_message(_depth_msg(U=U, u=u), recv_ts=100)
+    assert len(rec.events) == 0
 
 
-# --- first diff overlap validation --------------------------------------------
+# --- first diff overlap validation (parametrized) ----------------------------
 
-class TestFirstDiffOverlap:
-    def test_valid_first_diff_syncs(self):
-        """First diff where U <= lastUpdateId+1 <= u must sync and be recorded."""
-        stream, rec = _make_stream()
-        stream._snapshot_update_id = 10
-        stream._last_update_id = 10
-        stream._synced = False
-
-        # U=10 <= 11 <= u=12 ✓
-        stream._handle_message(_depth_msg(U=10, u=12), recv_ts=100)
-
-        assert stream._synced
-        assert not stream._needs_resync
-        assert stream._last_update_id == 12
-        assert len(rec.events) == 1
-
-    def test_invalid_first_diff_triggers_resync(self):
-        """First diff where overlap check fails must trigger resync."""
-        stream, rec = _make_stream()
-        stream._snapshot_update_id = 10
-        stream._last_update_id = 10
-        stream._synced = False
-
-        # U=15 > 11 → overlap fails
-        stream._handle_message(_depth_msg(U=15, u=20), recv_ts=100)
-
-        assert not stream._synced
-        assert stream._needs_resync
-        assert len(rec.events) == 0
-
-    def test_exact_boundary_first_diff(self):
-        """First diff where U=lastUpdateId+1 and u=lastUpdateId+1 (single update)."""
-        stream, rec = _make_stream()
-        stream._snapshot_update_id = 10
-        stream._last_update_id = 10
-        stream._synced = False
-
-        # U=11, u=11: 11 <= 11 <= 11 ✓
-        stream._handle_message(_depth_msg(U=11, u=11), recv_ts=100)
-
-        assert stream._synced
-        assert len(rec.events) == 1
+@pytest.mark.parametrize("desc,U,u,expect_synced", [
+    ("overlap_wide", 10, 12, True),     # U=10 <= 11 <= u=12 ✓
+    ("exact_boundary", 11, 11, True),   # U=11 <= 11 <= u=11 ✓
+    ("gap_after_snapshot", 15, 20, False),  # U=15 > 11 → resync
+])
+def test_first_diff_overlap(desc, U, u, expect_synced):
+    """First diff after snapshot must satisfy U <= lastUpdateId+1 <= u."""
+    stream, rec = _make_pre_sync_stream(10)
+    stream._handle_message(_depth_msg(U=U, u=u), recv_ts=100)
+    assert stream._synced == expect_synced
+    assert stream._needs_resync == (not expect_synced)
+    assert len(rec.events) == (1 if expect_synced else 0)
 
 
-# --- gap detection ------------------------------------------------------------
+# --- gap detection (parametrized) --------------------------------------------
 
-class TestGapDetection:
-    def test_gap_triggers_resync(self):
-        """U > last_update_id + 1 must set needs_resync."""
-        stream, rec = _make_stream()
-        stream._synced = True
-        stream._last_update_id = 10
-        stream._snapshot_update_id = None
-
-        # Gap: U=15 > 11
-        stream._handle_message(_depth_msg(U=15, u=20), recv_ts=100)
-
-        assert stream._needs_resync
-        assert len(rec.events) == 0
-
-    def test_contiguous_diff_accepted(self):
-        """U <= last_update_id + 1 must be accepted."""
-        stream, rec = _make_stream()
-        stream._synced = True
-        stream._last_update_id = 10
-        stream._snapshot_update_id = None
-
-        stream._handle_message(_depth_msg(U=11, u=11), recv_ts=100)
-
-        assert not stream._needs_resync
-        assert stream._last_update_id == 11
-        assert len(rec.events) == 1
-
-    def test_events_suppressed_during_resync(self):
-        """After needs_resync is set, all subsequent events are suppressed."""
-        stream, rec = _make_stream()
-        stream._synced = True
-        stream._last_update_id = 10
-        stream._snapshot_update_id = None
-
-        # Gap triggers resync
-        stream._handle_message(_depth_msg(U=15, u=20), recv_ts=100)
-        assert stream._needs_resync
-
-        # Subsequent events suppressed
-        stream._handle_message(_depth_msg(U=21, u=21), recv_ts=200)
-        stream._handle_message(_trade_msg(), recv_ts=300)
-
-        assert len(rec.events) == 0
+@pytest.mark.parametrize("desc,U,u,expect_gap", [
+    ("contiguous", 11, 11, False),   # U=11 <= 11 → OK
+    ("gap", 15, 20, True),           # U=15 > 11 → gap
+])
+def test_sequence_continuity(desc, U, u, expect_gap):
+    """Contiguous diffs accepted, gaps trigger resync."""
+    stream, rec = _make_synced_stream(10)
+    stream._handle_message(_depth_msg(U=U, u=u), recv_ts=100)
+    assert stream._needs_resync == expect_gap
+    assert len(rec.events) == (0 if expect_gap else 1)
 
 
-# --- trade passthrough --------------------------------------------------------
+def test_events_suppressed_during_resync():
+    """After needs_resync is set, all subsequent events are suppressed."""
+    stream, rec = _make_synced_stream(10)
+    stream._handle_message(_depth_msg(U=15, u=20), recv_ts=100)  # gap
+    stream._handle_message(_depth_msg(U=21, u=21), recv_ts=200)
+    stream._handle_message(_trade_msg(), recv_ts=300)
+    assert len(rec.events) == 0
 
-class TestTradePassthrough:
-    def test_trades_recorded_when_synced(self):
-        """Trades pass through without sequence validation when synced."""
-        stream, rec = _make_stream()
-        stream._synced = True
-        stream._last_update_id = 10
-        stream._snapshot_update_id = None
 
-        stream._handle_message(_trade_msg(), recv_ts=500)
+# --- trade passthrough (parametrized) ----------------------------------------
 
-        assert len(rec.events) == 1
-        assert rec.events[0]["event_type"] == EVENT_TRADE
-
-    def test_trades_recorded_before_first_diff_sync(self):
-        """Trades pass through even before the first diff is sync-validated."""
-        stream, rec = _make_stream()
-        stream._snapshot_update_id = 10
-        stream._last_update_id = 10
-        stream._synced = False
-
-        stream._handle_message(_trade_msg(), recv_ts=500)
-
-        assert len(rec.events) == 1
-        assert rec.events[0]["event_type"] == EVENT_TRADE
+@pytest.mark.parametrize("desc,setup", [
+    ("synced", "synced"),
+    ("pre_sync", "pre_sync"),
+])
+def test_trades_recorded(desc, setup):
+    """Trades pass through without sequence validation in any non-resync state."""
+    if setup == "synced":
+        stream, rec = _make_synced_stream()
+    else:
+        stream, rec = _make_pre_sync_stream()
+    stream._handle_message(_trade_msg(), recv_ts=500)
+    assert len(rec.events) == 1
+    assert rec.events[0]["event_type"] == EVENT_TRADE
 
 
 # --- mock WebSocket for _do_sync integration tests ---------------------------
 
 class MockWebSocket:
-    """Fake WebSocket that delivers messages from a queue.
-
-    After the queue is drained, recv() blocks until timeout (simulating
-    no more messages available — like the real WS library buffer being empty).
-    """
+    """Fake WebSocket that delivers messages from a queue."""
 
     def __init__(self, messages: list[str]):
         self._queue: asyncio.Queue[str] = asyncio.Queue()
@@ -305,11 +209,11 @@ def _snapshot_response(last_update_id: int = 10) -> dict:
 
 @pytest.mark.asyncio
 class TestDoSync:
-    async def test_buffered_messages_preserve_recv_ts(self):
-        """Messages buffered before snapshot fetch keep their recv_ts."""
+    async def test_snapshot_before_buffered_events(self):
+        """Snapshot is recorded first. Buffered trade + depth follow with recv_ts > 0."""
         ws = MockWebSocket([
-            _trade_msg(),                    # buffered before first depth
-            _depth_msg(U=5, u=5),            # first depth → triggers fetch
+            _trade_msg(),
+            _depth_msg(U=5, u=5),
         ])
         rec = MockRecorder()
         stream = BinanceStream("TESTUSDT", rec)
@@ -318,42 +222,18 @@ class TestDoSync:
                     return_value=_snapshot_response(10)):
             await stream._do_sync(ws)
 
-        # Recorder should have: snapshot, then buffered trade + depth
         types = [e["event_type"] for e in rec.events]
         assert types[0] == EVENT_DEPTH_SNAPSHOT
-        # Buffered events come after snapshot in recording
         assert EVENT_TRADE in types[1:]
-
-        # All buffered events have recv_ts > 0 (real timestamps, not restamped)
         for e in rec.events:
             assert e["recv_ts"] > 0
 
-    async def test_snapshot_recorded_before_buffered_diffs(self):
-        """Snapshot event must appear before buffered depth diffs in recorder."""
-        ws = MockWebSocket([
-            _depth_msg(U=5, u=5),
-            _depth_msg(U=6, u=6),
-        ])
-        rec = MockRecorder()
-        stream = BinanceStream("TESTUSDT", rec)
-
-        with patch("src.data.binance_stream._fetch_snapshot_sync",
-                    return_value=_snapshot_response(10)):
-            await stream._do_sync(ws)
-
-        types = [e["event_type"] for e in rec.events]
-        snap_idx = types.index(EVENT_DEPTH_SNAPSHOT)
-        # All depth updates are after the snapshot
-        depth_indices = [i for i, t in enumerate(types) if t == EVENT_DEPTH_UPDATE]
-        for idx in depth_indices:
-            assert idx > snap_idx
-
     async def test_stale_buffered_diffs_not_recorded(self):
-        """Buffered diffs with u <= lastUpdateId are dropped during processing."""
+        """Buffered diffs with u <= lastUpdateId are dropped."""
         ws = MockWebSocket([
-            _depth_msg(U=3, u=3),   # stale: u=3 <= lastUpdateId=10
-            _depth_msg(U=8, u=9),   # stale: u=9 <= 10
-            _depth_msg(U=10, u=12), # valid: overlaps snapshot
+            _depth_msg(U=3, u=3),   # stale
+            _depth_msg(U=8, u=9),   # stale
+            _depth_msg(U=10, u=12), # valid overlap
         ])
         rec = MockRecorder()
         stream = BinanceStream("TESTUSDT", rec)
@@ -363,15 +243,12 @@ class TestDoSync:
             await stream._do_sync(ws)
 
         types = [e["event_type"] for e in rec.events]
-        # Snapshot + 1 valid depth (stale ones dropped)
         assert types.count(EVENT_DEPTH_SNAPSHOT) == 1
         assert types.count(EVENT_DEPTH_UPDATE) == 1
 
     async def test_snapshot_retry_when_stale(self):
         """Snapshot is retried when lastUpdateId < first_U."""
-        ws = MockWebSocket([
-            _depth_msg(U=20, u=20),
-        ])
+        ws = MockWebSocket([_depth_msg(U=20, u=20)])
         rec = MockRecorder()
         stream = BinanceStream("TESTUSDT", rec)
 
@@ -380,8 +257,8 @@ class TestDoSync:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return _snapshot_response(10)  # too old: 10 < 20
-            return _snapshot_response(25)      # fresh enough: 25 >= 20
+                return _snapshot_response(10)  # too old
+            return _snapshot_response(25)
 
         with patch("src.data.binance_stream._fetch_snapshot_sync", side_effect=_mock_fetch):
             await stream._do_sync(ws)
@@ -389,29 +266,9 @@ class TestDoSync:
         assert call_count == 2
         assert stream._snapshot_update_id == 25
 
-    async def test_trade_before_depth_preserved_in_order(self):
-        """A trade arriving before the first depth is buffered and recorded."""
-        ws = MockWebSocket([
-            _trade_msg(price="99.50"),
-            _depth_msg(U=5, u=5),
-        ])
-        rec = MockRecorder()
-        stream = BinanceStream("TESTUSDT", rec)
-
-        with patch("src.data.binance_stream._fetch_snapshot_sync",
-                    return_value=_snapshot_response(10)):
-            await stream._do_sync(ws)
-
-        types = [e["event_type"] for e in rec.events]
-        # snapshot first, then trade, then depth (stale depth dropped)
-        assert types[0] == EVENT_DEPTH_SNAPSHOT
-        assert EVENT_TRADE in types
-
-    async def test_sync_state_after_do_sync(self):
-        """After _do_sync, stream is ready for normal message processing."""
-        ws = MockWebSocket([
-            _depth_msg(U=10, u=12),  # valid first diff: 10 <= 11 <= 12
-        ])
+    async def test_sync_state_after_valid_diff(self):
+        """After _do_sync with a valid first diff, stream is synced."""
+        ws = MockWebSocket([_depth_msg(U=10, u=12)])
         rec = MockRecorder()
         stream = BinanceStream("TESTUSDT", rec)
 

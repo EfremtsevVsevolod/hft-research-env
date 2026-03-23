@@ -73,7 +73,7 @@ class FeatureExtractor:
         trade_window_ms: int = 100,
     ) -> None:
         self.interval = sampling_interval_ms
-        self._trade_window = trade_window_ms
+        self.trade_window = trade_window_ms
 
         self._next_emit: Optional[int] = None
         self._prev_ts: Optional[int] = None
@@ -171,7 +171,7 @@ class FeatureExtractor:
         )
 
     def _evict_trades(self, ts: int) -> tuple[Decimal, Decimal]:
-        cutoff = ts - self._trade_window
+        cutoff = ts - self.trade_window
         while self._trades and self._trades[0].timestamp < cutoff:
             t = self._trades.pop(0)
             if t.is_buyer_maker:

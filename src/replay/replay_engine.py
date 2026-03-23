@@ -89,6 +89,12 @@ class ReplayEngine:
             f"label horizon ({label_builder._horizon}ms) must be a multiple of "
             f"sampling interval ({feature_extractor.interval}ms)"
         )
+        if self._warmup_ms < feature_extractor.trade_window:
+            raise ValueError(
+                f"warmup ({self._warmup_ms}ms) must be >= "
+                f"trade_window ({feature_extractor.trade_window}ms) "
+                f"for feature stabilization"
+            )
 
         self.state: str = WAIT_SNAPSHOT
         self._last_update_id: Optional[int] = None

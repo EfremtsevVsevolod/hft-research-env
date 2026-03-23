@@ -118,9 +118,15 @@ class LabelSink:
 
 # --- replay helpers (3 levels) -----------------------------------------------
 
-def _make_engine(cfg, *, interval, label_builder, dataset_builder, warmup_s=0):
+_TEST_TRADE_WINDOW_MS = 100
+_TEST_WARMUP_S = 0.1  # 100ms = trade_window — minimum valid warmup
+
+
+def _make_engine(cfg, *, interval, label_builder, dataset_builder,
+                 warmup_s=_TEST_WARMUP_S):
     book = OrderBook(cfg)
-    fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
+    fe = FeatureExtractor(sampling_interval_ms=interval,
+                          trade_window_ms=_TEST_TRADE_WINDOW_MS)
     engine = ReplayEngine(
         data_path=Path("/unused"), order_book=book, feature_extractor=fe,
         label_builder=label_builder, dataset_builder=dataset_builder,
@@ -135,7 +141,7 @@ def _feed(engine, events):
         engine.process_event(recv_ts, event_type, data)
 
 
-def replay_to_snapshots(cfg, events, *, interval=100, warmup_s=0):
+def replay_to_snapshots(cfg, events, *, interval=100, warmup_s=_TEST_WARMUP_S):
     """Replay → FeatureSnapshots only. No labeling, no dataset."""
     sink = SnapshotSink(horizon=interval)
     engine, book = _make_engine(cfg, interval=interval, label_builder=sink,
@@ -144,7 +150,8 @@ def replay_to_snapshots(cfg, events, *, interval=100, warmup_s=0):
     return engine, sink.snapshots, book
 
 
-def replay_to_labels(cfg, events, *, interval=100, horizon=200, warmup_s=0):
+def replay_to_labels(cfg, events, *, interval=100, horizon=200,
+                     warmup_s=_TEST_WARMUP_S):
     """Replay → LabelledSnapshots. No dataset filtering."""
     lb = LabelBuilder(horizon_ms=horizon, sampling_interval_ms=interval)
     sink = LabelSink()
@@ -154,7 +161,8 @@ def replay_to_labels(cfg, events, *, interval=100, horizon=200, warmup_s=0):
     return engine, sink.labelled, book
 
 
-def replay_to_dataset(cfg, events, *, interval=100, horizon=200, warmup_s=0):
+def replay_to_dataset(cfg, events, *, interval=100, horizon=200,
+                      warmup_s=_TEST_WARMUP_S):
     """Replay → full pipeline → DatasetBuilder DataFrame."""
     lb = LabelBuilder(horizon_ms=horizon, sampling_interval_ms=interval)
     db = DatasetBuilder()

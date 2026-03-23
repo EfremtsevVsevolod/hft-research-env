@@ -80,10 +80,11 @@ class TestBootstrap:
             _snapshot(100, 5, [("100.00", "1.00")], [("100.01", "1.00")]),
             _depth(200, 6, [], [], U=6),
             _depth(300, 7, [], []),
+            _depth(400, 8, [], []),
         ]
         _, snaps, _ = replay_to_snapshots(cfg, events)
-        # Grid at 200: trade at t=50 should not appear (before bootstrap)
-        s = snap_at(snaps, 200)
+        # First emitted grid (after warmup): trade at t=50 should not appear
+        s = snap_at(snaps, 300)
         assert s.buy_volume == 0
 
     def test_first_diff_must_overlap_snapshot(self, cfg):
@@ -250,18 +251,12 @@ class TestWarmup:
         assert all(t >= 600 for t in timestamps)
         assert all(t % 100 == 0 for t in timestamps)
 
-    def test_warmup_zero_emits_immediately(self, cfg):
-        """warmup_s=0 must emit from first grid node."""
-        events = [
-            _default_snapshot(50, 0),
-            _depth(100, 1, [], [], U=1),
-            _depth(200, 2, [], []),
-            _depth(300, 3, [], []),
-        ]
-        _, snaps, _ = replay_to_snapshots(cfg, events, warmup_s=0)
-
-        timestamps = [s.timestamp for s in snaps]
-        assert 100 in timestamps
+    def test_warmup_below_trade_window_rejected(self, cfg):
+        """Warmup shorter than trade_window must raise ValueError."""
+        from tests.conftest import _make_engine, SnapshotSink, LabelSink
+        with pytest.raises(ValueError, match="warmup.*must be >= trade_window"):
+            _make_engine(cfg, interval=100, label_builder=SnapshotSink(horizon=100),
+                         dataset_builder=LabelSink(), warmup_s=0)
 
     def test_warmup_book_updates_normally(self, cfg):
         """During warmup, book updates are applied. After warmup, book
@@ -277,7 +272,6 @@ class TestWarmup:
         # Book has the update from t=100 (during warmup)
         assert book.best_ask() == 10004  # 100.04
         # First emitted snapshot (after warmup) sees the updated book
-        assert len(snaps) > 0
         s = snaps[0]
         assert float(s.spread) == pytest.approx(0.04)
 
@@ -392,10 +386,11 @@ class TestCrossedBook:
 
 class TestLabelEmission:
     def test_label_produced_after_horizon(self, cfg):
-        """Horizon=200ms, interval=100ms. Grid nodes: 100..800.
+        """Horizon=200ms, interval=100ms, warmup=100ms.
+        Grid starts at 100, warmup ends at 200. Emitted grids: 200..700.
 
-        Labels pair each grid node with the one 200ms later:
-        (100→300), (200→400), (300→500), (400→600), (500→700).
+        Labels pair each emitted grid with the one 200ms later:
+        (200→400), (300→500), (400→600), (500→700).
         """
         events = [
             _default_snapshot(50, 0),
@@ -404,20 +399,21 @@ class TestLabelEmission:
         ]
         _, labelled, _ = replay_to_labels(cfg, events, horizon=200)
         labeled_ts = [ls.snapshot.timestamp for ls in labelled]
-        assert labeled_ts == [100, 200, 300, 400, 500]
+        assert labeled_ts == [200, 300, 400, 500]
 
     def test_label_value_is_midprice_delta(self, cfg):
+        """Grid 200: mid=100.01 (before ask change at t=250).
+        Grid 400: mid=100.02 (after). Label at 200 = 0.01."""
         events = [
             _default_snapshot(50, 0),
             _depth(100, 1, [], [], U=1),
-            _depth(150, 2, [], [("100.02", "0"), ("100.04", "1.00")]),
-            _depth(250, 3, [], []),
-            _depth(350, 4, [], []),
-            _depth(450, 5, [], []),
+            # Price change after warmup so grid 200 sees old mid
+            _depth(250, 2, [], [("100.02", "0"), ("100.04", "1.00")]),
+            _depth(350, 3, [], []),
+            _depth(450, 4, [], []),
+            _depth(550, 5, [], []),
         ]
         _, labelled, _ = replay_to_labels(cfg, events, horizon=200)
-        assert len(labelled) > 0
-        # Grid 100: mid=100.01 (before t=150). Grid 300: mid=100.02 (after).
         assert float(labelled[0].label) == pytest.approx(0.01)
 
 
