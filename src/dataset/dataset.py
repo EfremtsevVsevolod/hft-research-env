@@ -40,7 +40,7 @@ class DatasetBuilder:
             db.on_labelled_snapshot(labelled)
 
         df = db.to_dataframe()
-        db.save_parquet(Path("dataset.parquet"))
+        db.save_parquet(output_path)
     """
 
     def __init__(self) -> None:

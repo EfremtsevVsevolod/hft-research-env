@@ -2,7 +2,7 @@
 """Build an ML dataset by replaying recorded Binance events.
 
 Usage:
-    python scripts/replay_dataset.py data/raw/binance/BTCUSDT --symbol BTCUSDT --output dataset.parquet
+    python scripts/replay_dataset.py data/raw/binance/BTCUSDT --symbol BTCUSDT
 """
 
 from __future__ import annotations
@@ -23,11 +23,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Replay raw Binance data to build ML dataset")
     parser.add_argument("data_path", type=Path, help="Directory with recorded Parquet files")
     parser.add_argument("--symbol", required=True, help="Symbol name (e.g. BTCUSDT)")
-    parser.add_argument("--output", type=Path, default=Path("dataset.parquet"), help="Output Parquet path")
+    parser.add_argument("--output", type=Path, default=Path("data/datasets/dataset.parquet"), help="Output Parquet path")
     parser.add_argument("--warmup", type=int, default=600, help="Warmup seconds (default: 600)")
     parser.add_argument("--interval", type=int, default=100, help="Sampling interval ms (default: 100)")
     parser.add_argument("--horizon", type=int, default=200, help="Label horizon ms (default: 200)")
     parser.add_argument("--trade-window", type=int, default=1000, help="Trade window ms (default: 1000)")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output file")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -35,6 +36,10 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    if args.output.exists() and not args.overwrite:
+        raise SystemExit(f"Output file already exists: {args.output}\nUse --overwrite to replace.")
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     cfg = fetch_symbol_config(args.symbol)
 
     book = OrderBook(cfg)
