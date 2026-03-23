@@ -156,6 +156,7 @@ class BinanceStream:
                 first_U = int(data["U"])
 
         # Step 2: Fetch snapshot. Retry if lastUpdateId < first_U.
+        # During fetch, WS messages queue in the websockets library buffer.
         while True:
             snapshot = await asyncio.to_thread(
                 _fetch_snapshot_sync, self._symbol_upper,
@@ -167,12 +168,22 @@ class BinanceStream:
                 snapshot["lastUpdateId"], first_U,
             )
 
-        # Step 3: Record snapshot, set state.
+        # Step 3: Drain WS messages that queued during the REST fetch.
+        # They get recv_ts = now (ms-level error vs hundreds of ms without drain).
+        while True:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=0.01)
+                recv_ts = time.time_ns() // 1_000_000
+                buffer.append((recv_ts, raw))
+            except asyncio.TimeoutError:
+                break
+
+        # Step 4: Record snapshot, set state.
         self._record_snapshot(snapshot)
         self._snapshot_update_id = snapshot["lastUpdateId"]
         self._last_update_id = snapshot["lastUpdateId"]
 
-        # Step 4: Process buffered messages with original recv_ts.
+        # Step 5: Process all buffered messages with their original recv_ts.
         for recv_ts, raw in buffer:
             if not self._running:
                 return

@@ -3,15 +3,19 @@
 Tests exercise _handle_message directly with a mock recorder to verify
 sequence validation, recv_ts preservation, and gap detection without
 needing a live WebSocket connection.
+
+Integration tests for _do_sync use a mock WebSocket and patched REST fetch.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from unittest.mock import patch
 
 import pytest
 
 from src.data.binance_stream import BinanceStream
-from src.data.constants import EVENT_DEPTH_UPDATE, EVENT_TRADE
+from src.data.constants import EVENT_DEPTH_SNAPSHOT, EVENT_DEPTH_UPDATE, EVENT_TRADE
 
 
 # --- mock recorder -----------------------------------------------------------
@@ -260,3 +264,161 @@ class TestTradePassthrough:
 
         assert len(rec.events) == 1
         assert rec.events[0]["event_type"] == EVENT_TRADE
+
+
+# --- mock WebSocket for _do_sync integration tests ---------------------------
+
+class MockWebSocket:
+    """Fake WebSocket that delivers messages from a queue.
+
+    After the queue is drained, recv() blocks until timeout (simulating
+    no more messages available — like the real WS library buffer being empty).
+    """
+
+    def __init__(self, messages: list[str]):
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        for m in messages:
+            self._queue.put_nowait(m)
+
+    async def recv(self) -> str:
+        return await self._queue.get()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> str:
+        try:
+            return await asyncio.wait_for(self.recv(), timeout=0.05)
+        except asyncio.TimeoutError:
+            raise StopAsyncIteration
+
+
+def _snapshot_response(last_update_id: int = 10) -> dict:
+    return {
+        "lastUpdateId": last_update_id,
+        "bids": [["100.00", "1.00"]],
+        "asks": [["100.01", "1.00"]],
+    }
+
+
+# --- _do_sync integration tests -----------------------------------------------
+
+@pytest.mark.asyncio
+class TestDoSync:
+    async def test_buffered_messages_preserve_recv_ts(self):
+        """Messages buffered before snapshot fetch keep their recv_ts."""
+        ws = MockWebSocket([
+            _trade_msg(),                    # buffered before first depth
+            _depth_msg(U=5, u=5),            # first depth → triggers fetch
+        ])
+        rec = MockRecorder()
+        stream = BinanceStream("TESTUSDT", rec)
+
+        with patch("src.data.binance_stream._fetch_snapshot_sync",
+                    return_value=_snapshot_response(10)):
+            await stream._do_sync(ws)
+
+        # Recorder should have: snapshot, then buffered trade + depth
+        types = [e["event_type"] for e in rec.events]
+        assert types[0] == EVENT_DEPTH_SNAPSHOT
+        # Buffered events come after snapshot in recording
+        assert EVENT_TRADE in types[1:]
+
+        # All buffered events have recv_ts > 0 (real timestamps, not restamped)
+        for e in rec.events:
+            assert e["recv_ts"] > 0
+
+    async def test_snapshot_recorded_before_buffered_diffs(self):
+        """Snapshot event must appear before buffered depth diffs in recorder."""
+        ws = MockWebSocket([
+            _depth_msg(U=5, u=5),
+            _depth_msg(U=6, u=6),
+        ])
+        rec = MockRecorder()
+        stream = BinanceStream("TESTUSDT", rec)
+
+        with patch("src.data.binance_stream._fetch_snapshot_sync",
+                    return_value=_snapshot_response(10)):
+            await stream._do_sync(ws)
+
+        types = [e["event_type"] for e in rec.events]
+        snap_idx = types.index(EVENT_DEPTH_SNAPSHOT)
+        # All depth updates are after the snapshot
+        depth_indices = [i for i, t in enumerate(types) if t == EVENT_DEPTH_UPDATE]
+        for idx in depth_indices:
+            assert idx > snap_idx
+
+    async def test_stale_buffered_diffs_not_recorded(self):
+        """Buffered diffs with u <= lastUpdateId are dropped during processing."""
+        ws = MockWebSocket([
+            _depth_msg(U=3, u=3),   # stale: u=3 <= lastUpdateId=10
+            _depth_msg(U=8, u=9),   # stale: u=9 <= 10
+            _depth_msg(U=10, u=12), # valid: overlaps snapshot
+        ])
+        rec = MockRecorder()
+        stream = BinanceStream("TESTUSDT", rec)
+
+        with patch("src.data.binance_stream._fetch_snapshot_sync",
+                    return_value=_snapshot_response(10)):
+            await stream._do_sync(ws)
+
+        types = [e["event_type"] for e in rec.events]
+        # Snapshot + 1 valid depth (stale ones dropped)
+        assert types.count(EVENT_DEPTH_SNAPSHOT) == 1
+        assert types.count(EVENT_DEPTH_UPDATE) == 1
+
+    async def test_snapshot_retry_when_stale(self):
+        """Snapshot is retried when lastUpdateId < first_U."""
+        ws = MockWebSocket([
+            _depth_msg(U=20, u=20),
+        ])
+        rec = MockRecorder()
+        stream = BinanceStream("TESTUSDT", rec)
+
+        call_count = 0
+        def _mock_fetch(symbol):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _snapshot_response(10)  # too old: 10 < 20
+            return _snapshot_response(25)      # fresh enough: 25 >= 20
+
+        with patch("src.data.binance_stream._fetch_snapshot_sync", side_effect=_mock_fetch):
+            await stream._do_sync(ws)
+
+        assert call_count == 2
+        assert stream._snapshot_update_id == 25
+
+    async def test_trade_before_depth_preserved_in_order(self):
+        """A trade arriving before the first depth is buffered and recorded."""
+        ws = MockWebSocket([
+            _trade_msg(price="99.50"),
+            _depth_msg(U=5, u=5),
+        ])
+        rec = MockRecorder()
+        stream = BinanceStream("TESTUSDT", rec)
+
+        with patch("src.data.binance_stream._fetch_snapshot_sync",
+                    return_value=_snapshot_response(10)):
+            await stream._do_sync(ws)
+
+        types = [e["event_type"] for e in rec.events]
+        # snapshot first, then trade, then depth (stale depth dropped)
+        assert types[0] == EVENT_DEPTH_SNAPSHOT
+        assert EVENT_TRADE in types
+
+    async def test_sync_state_after_do_sync(self):
+        """After _do_sync, stream is ready for normal message processing."""
+        ws = MockWebSocket([
+            _depth_msg(U=10, u=12),  # valid first diff: 10 <= 11 <= 12
+        ])
+        rec = MockRecorder()
+        stream = BinanceStream("TESTUSDT", rec)
+
+        with patch("src.data.binance_stream._fetch_snapshot_sync",
+                    return_value=_snapshot_response(10)):
+            await stream._do_sync(ws)
+
+        assert stream._synced
+        assert stream._last_update_id == 12
+        assert not stream._needs_resync
