@@ -3,10 +3,19 @@
 Reads raw Parquet files produced by Recorder, reconstructs the order book
 from depth snapshots, and drives FeatureExtractor → LabelBuilder → DatasetBuilder.
 
-The book is initialized from a depthSnapshot event (REST snapshot stored in the
-recording).  After each bootstrap a warmup period lets feature state stabilize
-before snapshots are emitted to labels/dataset.  During warmup the book
-updates normally and features are computed — only emission is suppressed.
+State machine
+-------------
+WAIT_SNAPSHOT  →  depthSnapshot  →  WARMING  →  warmup elapsed  →  LIVE
+     ↑                                                                |
+     └──── gap / invalid continuity / crossed book ───────────────────┘
+
+WAIT_SNAPSHOT: ignore depthUpdate and trade, wait for depthSnapshot.
+WARMING:       book updates normally, features evolve, but no rows emitted.
+LIVE:          full pipeline — features emitted to labels and dataset.
+
+Snapshot initializes the book immediately.  Warmup only stabilizes feature
+state (delta_midprice, trade windows).  Snapshot-boundary timing is treated
+pragmatically because the long warmup makes sub-ms precision irrelevant.
 """
 
 from __future__ import annotations
@@ -28,6 +37,11 @@ from src.lob.orderbook import OrderBook
 
 logger = logging.getLogger(__name__)
 
+# Replay states
+WAIT_SNAPSHOT = "WAIT_SNAPSHOT"
+WARMING = "WARMING"
+LIVE = "LIVE"
+
 
 class ReplayEngine:
     """Replay recorded Binance events through the full feature pipeline.
@@ -36,10 +50,6 @@ class ReplayEngine:
     This models what a local system knew at the time it knew it — in a
     live system you act on data when you receive it, not when the exchange
     generated it.  ``exchange_ts`` is preserved in raw data for analysis.
-
-    The book must be initialized from a ``depthSnapshot`` event before any
-    depth updates are applied.  Recordings without snapshots will produce
-    no output.
 
     Parameters
     ----------
@@ -80,30 +90,60 @@ class ReplayEngine:
             f"sampling interval ({feature_extractor.interval}ms)"
         )
 
+        self.state: str = WAIT_SNAPSHOT
         self._last_update_id: Optional[int] = None
         self._snapshot_update_id: Optional[int] = None
-        self._bootstrapped = False
         self._bootstrap_count: int = 0
         self._next_grid: Optional[int] = None
-        self._warmup_done = False
         self._warmup_end_ts: Optional[int] = None
         self._trade_buffer: deque[Trade] = deque()
         self._event_count: int = 0
         self.sequence_gaps_detected: int = 0
 
-    def _reset(self, reason: str) -> None:
-        """Clear book and pipeline state, wait for next snapshot."""
-        logger.warning("%s. Resetting book, waiting for next snapshot.", reason)
+    # --- state transitions ---------------------------------------------------
+
+    def _bootstrap_from_snapshot(self, data: dict) -> None:
+        """WAIT_SNAPSHOT → WARMING (or LIVE if warmup_ms == 0)."""
+        self._book.apply_snapshot({"bids": data["bids"], "asks": data["asks"]})
+        self._snapshot_update_id = int(data["lastUpdateId"])
+        self._last_update_id = int(data["lastUpdateId"])
+        self._bootstrap_count += 1
+        self._next_grid = None
+        self._warmup_end_ts = None
+        self._fe.reset()
+        self._lb.reset()
+        self._db.reset_timestamp()
+        self._trade_buffer.clear()
+        self.state = LIVE if self._warmup_ms == 0 else WARMING
+        logger.info(
+            "Bootstrap #%d from snapshot lastUpdateId=%d → %s",
+            self._bootstrap_count, self._snapshot_update_id, self.state,
+        )
+
+    def _transition_to_wait_snapshot(self, reason: str) -> None:
+        """Any state → WAIT_SNAPSHOT on invalid continuity."""
+        logger.warning("%s. Resetting, waiting for next snapshot.", reason)
         self._book.clear()
         self._fe.reset()
         self._lb.reset()
         self._db.reset_timestamp()
         self._last_update_id = None
-        self._bootstrapped = False
+        self._snapshot_update_id = None
         self._next_grid = None
-        self._warmup_done = False
         self._warmup_end_ts = None
         self._trade_buffer = deque()
+        self.state = WAIT_SNAPSHOT
+
+    def _maybe_transition_warming_to_live(self, grid_ts: int) -> None:
+        """WARMING → LIVE when grid timestamp reaches warmup deadline."""
+        if self.state == WARMING and grid_ts >= self._warmup_end_ts:
+            self.state = LIVE
+            logger.info(
+                "Warmup complete at grid_ts=%d (%d events processed)",
+                grid_ts, self._event_count,
+            )
+
+    # --- replay loop ---------------------------------------------------------
 
     def run(self) -> None:
         """Replay all Parquet files and populate the dataset builder."""
@@ -128,7 +168,7 @@ class ReplayEngine:
     def process_event(self, recv_ts: int, event_type: str, data: dict) -> None:
         """Process a single event. Used by run() and available for testing."""
         if event_type == EVENT_DEPTH_SNAPSHOT:
-            self._on_snapshot(recv_ts, data)
+            self._bootstrap_from_snapshot(data)
         elif event_type == EVENT_TRADE:
             self._on_trade(recv_ts, data)
         elif event_type == EVENT_DEPTH_UPDATE:
@@ -142,28 +182,11 @@ class ReplayEngine:
                 self._event_count, recv_ts, len(self._db),
             )
 
-    def _on_snapshot(self, recv_ts: int, data: dict) -> None:
-        """Initialize book from a depth snapshot."""
-        self._book.apply_snapshot({"bids": data["bids"], "asks": data["asks"]})
-        self._snapshot_update_id = int(data["lastUpdateId"])
-        self._last_update_id = int(data["lastUpdateId"])
-        self._bootstrapped = True
-        self._bootstrap_count += 1
-        self._next_grid = None
-        self._warmup_done = False
-        self._warmup_end_ts = None
-        self._fe.reset()
-        self._lb.reset()
-        self._db.reset_timestamp()
-        self._trade_buffer.clear()
-        logger.info(
-            "Bootstrap #%d from snapshot lastUpdateId=%d",
-            self._bootstrap_count, self._snapshot_update_id,
-        )
+    # --- event handlers ------------------------------------------------------
 
     def _on_trade(self, recv_ts: int, data: dict) -> None:
-        """Buffer a trade event (only after bootstrap)."""
-        if not self._bootstrapped:
+        """Buffer a trade event (ignored in WAIT_SNAPSHOT)."""
+        if self.state == WAIT_SNAPSHOT:
             return
         trade = Trade(
             timestamp=recv_ts,
@@ -179,7 +202,7 @@ class ReplayEngine:
         Order of operations ensures causality: grid nodes see only the
         book state from BEFORE this depth event, matching live behavior.
         """
-        if not self._bootstrapped:
+        if self.state == WAIT_SNAPSHOT:
             return
 
         U = int(data["U"])
@@ -187,16 +210,14 @@ class ReplayEngine:
 
         # 1. Sequence check
         if self._snapshot_update_id is not None:
-            # Drop stale diffs from before the snapshot
             if u <= self._snapshot_update_id:
-                return
-            # First non-stale diff after snapshot: validate overlap
+                return  # stale diff from before snapshot
             if not (U <= self._snapshot_update_id + 1 <= u):
                 logger.warning(
                     "First diff after snapshot failed sync: U=%d, u=%d, lastUpdateId=%d",
                     U, u, self._snapshot_update_id,
                 )
-                self._reset("Snapshot sync validation failed")
+                self._transition_to_wait_snapshot("Snapshot sync validation failed")
                 return
             self._snapshot_update_id = None
             self._last_update_id = u
@@ -204,7 +225,7 @@ class ReplayEngine:
             return  # stale event
         elif U > self._last_update_id + 1:
             self.sequence_gaps_detected += 1
-            self._reset(
+            self._transition_to_wait_snapshot(
                 f"Sequence gap #{self.sequence_gaps_detected}: "
                 f"expected {self._last_update_id + 1}, got U={U}, "
                 f"{self._event_count} events processed"
@@ -214,8 +235,7 @@ class ReplayEngine:
             self._last_update_id = u
 
         # 2. Compute features BEFORE applying update (causal correctness).
-        #    Grid nodes use the book state prior to this depth event.
-        #    During warmup features are computed (state evolves) but not emitted.
+        #    During WARMING features are computed (state evolves) but not emitted.
         if self._next_grid is not None:
             while self._next_grid < recv_ts:
                 causal_trades: list[Trade] = []
@@ -225,13 +245,8 @@ class ReplayEngine:
                     self._next_grid, self._book, causal_trades,
                 )
                 if snap is not None:
-                    if not self._warmup_done and self._next_grid >= self._warmup_end_ts:
-                        self._warmup_done = True
-                        logger.info(
-                            "Warmup complete at grid_ts=%d (%d events processed)",
-                            self._next_grid, self._event_count,
-                        )
-                    if self._warmup_done:
+                    self._maybe_transition_warming_to_live(self._next_grid)
+                    if self.state == LIVE:
                         self._emit(snap)
                 self._next_grid += self._interval
 
@@ -239,14 +254,13 @@ class ReplayEngine:
         self._book.apply_update({"bids": data["b"], "asks": data["a"]})
 
         if self._book.is_crossed():
-            self._reset("Crossed book detected")
+            self._transition_to_wait_snapshot("Crossed book detected")
             return
 
         # 4. Initialize grid and warmup deadline on first depth after snapshot.
         if self._next_grid is None:
             self._next_grid = recv_ts - (recv_ts % self._interval)
             self._warmup_end_ts = self._next_grid + self._warmup_ms
-            self._warmup_done = (self._warmup_ms == 0)
 
     def _emit(self, snap: FeatureSnapshot) -> None:
         """Push a snapshot through label builder and dataset builder."""

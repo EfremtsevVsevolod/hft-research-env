@@ -96,7 +96,7 @@ class TestBootstrap:
             _depth(200, 13, [], []),
         ]
         engine, _, book = replay_to_snapshots(cfg, events)
-        assert engine._bootstrapped
+        assert engine.state != "WAIT_SNAPSHOT"
         assert engine.sequence_gaps_detected == 0
 
     def test_first_diff_overlap_fails_resets(self, cfg):
@@ -107,7 +107,7 @@ class TestBootstrap:
             _depth(100, 20, [], [], U=15),
         ]
         engine, _, _ = replay_to_snapshots(cfg, events)
-        assert not engine._bootstrapped
+        assert engine.state == "WAIT_SNAPSHOT"
 
     def test_stale_diffs_dropped_after_snapshot(self, cfg):
         """Diffs with u <= lastUpdateId are dropped (stale from before snapshot)."""
@@ -127,7 +127,7 @@ class TestBootstrap:
         assert book.best_bid() == 10000
 
     def test_gap_after_bootstrap_resets(self, cfg):
-        """Gap in sequence after bootstrap → _bootstrapped=False."""
+        """Gap in sequence after bootstrap → WAIT_SNAPSHOT."""
         events = [
             _snapshot(50, 5, [("100.00", "1.00")], [("100.01", "1.00")]),
             _depth(100, 6, [], [], U=6),
@@ -137,7 +137,7 @@ class TestBootstrap:
         ]
         engine, _, _ = replay_to_snapshots(cfg, events)
         assert engine.sequence_gaps_detected == 1
-        assert not engine._bootstrapped
+        assert engine.state == "WAIT_SNAPSHOT"
 
     def test_re_bootstrap_from_new_snapshot(self, cfg):
         """Gap → new snapshot → clean recovery."""
@@ -153,7 +153,7 @@ class TestBootstrap:
             _depth(500, 32, [], []),
         ]
         engine, _, book = replay_to_snapshots(cfg, events)
-        assert engine._bootstrapped
+        assert engine.state != "WAIT_SNAPSHOT"
         assert engine._bootstrap_count == 2
         assert book.best_bid() == 9900   # 99.00
         assert book.best_ask() == 9901   # 99.01
