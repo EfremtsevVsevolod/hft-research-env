@@ -61,11 +61,16 @@ class LabelBuilder:
         if snap.timestamp - past.timestamp < self._horizon:
             return None
 
-        self._buffer.popleft()
-
-        if past.midprice is None or snap.midprice is None:
+        # past has no midprice — can never be labeled, discard
+        if past.midprice is None:
+            self._buffer.popleft()
             return None
 
+        # future midprice missing — keep past, retry next grid node
+        if snap.midprice is None:
+            return None
+
+        self._buffer.popleft()
         return LabelledSnapshot(
             snapshot=past,
             label=snap.midprice - past.midprice,
