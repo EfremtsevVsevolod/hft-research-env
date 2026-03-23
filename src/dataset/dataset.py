@@ -6,8 +6,6 @@ from math import isfinite
 from pathlib import Path
 
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 from src.lob.labels import LabelledSnapshot
 
@@ -93,6 +91,9 @@ class DatasetBuilder:
 
     def save_parquet(self, path: Path, metadata: dict | None = None) -> None:
         """Save the dataset to a Parquet file with optional metadata."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
         table = pa.Table.from_pandas(self.to_dataframe())
         if metadata:
             existing = table.schema.metadata or {}

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-import json
 from decimal import Decimal
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from src.config.config import SymbolConfig
+from src.data.constants import EVENT_DEPTH_UPDATE, EVENT_TRADE
+from src.dataset.dataset import DatasetBuilder
+from src.lob.features import FeatureExtractor
+from src.lob.labels import LabelBuilder
 from src.lob.orderbook import OrderBook
+from src.replay.replay_engine import ReplayEngine
 
+
+# --- fixtures ----------------------------------------------------------------
 
 @pytest.fixture
 def cfg() -> SymbolConfig:
@@ -28,50 +33,103 @@ def book(cfg) -> OrderBook:
     return OrderBook(cfg)
 
 
+# --- event builders ----------------------------------------------------------
+
 def make_snapshot(bids: list[tuple[str, str]], asks: list[tuple[str, str]]) -> dict:
-    """Build snapshot dict from (price, qty) string pairs."""
     return {"bids": list(bids), "asks": list(asks)}
 
 
 def make_depth_payload(u: int, bids: list[tuple[str, str]], asks: list[tuple[str, str]],
                        *, U: int | None = None) -> dict:
-    """Build Binance-format depth update payload."""
-    return {
-        "e": "depthUpdate",
-        "U": U if U is not None else u,
-        "u": u,
-        "b": list(bids),
-        "a": list(asks),
-    }
+    return {"e": "depthUpdate", "U": U if U is not None else u, "u": u,
+            "b": list(bids), "a": list(asks)}
 
 
 def make_trade_payload(price: str, qty: str, is_buyer_maker: bool) -> dict:
-    """Build Binance-format trade payload."""
-    return {
-        "e": "trade",
-        "T": 0,  # not used (replay uses recv_ts)
-        "p": price,
-        "q": qty,
-        "m": is_buyer_maker,
-    }
+    return {"e": "trade", "T": 0, "p": price, "q": qty, "m": is_buyer_maker}
 
 
-def write_test_parquet(path: Path, events: list[tuple[int, str, dict]]) -> Path:
-    """Write synthetic events to a parquet file.
+# --- stubs for narrow tests --------------------------------------------------
 
-    Each event is (recv_ts, event_type, payload_dict).
-    Returns path to the written file.
-    """
-    rows = []
-    for recv_ts, event_type, payload in events:
-        rows.append({
-            "recv_ts": recv_ts,
-            "exchange_ts": recv_ts,
-            "event_type": event_type,
-            "stream": "test",
-            "payload_json": json.dumps(payload),
-        })
-    df = pd.DataFrame(rows)
-    parquet_path = path / "test_data.parquet"
-    df.to_parquet(parquet_path, index=False)
-    return path
+class SnapshotSink:
+    """Drop-in for LabelBuilder — records snapshots without labeling."""
+    _horizon = 100  # satisfies ReplayEngine assertion
+
+    def __init__(self):
+        self.snapshots = []
+
+    def on_snapshot(self, snap):
+        self.snapshots.append(snap)
+        return None
+
+    def reset(self):
+        self.snapshots.clear()
+
+
+class LabelSink:
+    """Drop-in for DatasetBuilder — records labelled snapshots without filtering."""
+
+    def __init__(self):
+        self.labelled = []
+
+    def on_labelled_snapshot(self, ls):
+        self.labelled.append(ls)
+
+    def reset_timestamp(self):
+        pass
+
+    def __len__(self):
+        return len(self.labelled)
+
+
+# --- replay helpers (3 levels) -----------------------------------------------
+
+def _feed_events(engine, events):
+    for recv_ts, event_type, data in events:
+        if event_type == EVENT_TRADE:
+            engine._on_trade(recv_ts, data)
+        elif event_type == EVENT_DEPTH_UPDATE:
+            engine._on_depth(recv_ts, data)
+        engine._event_count += 1
+
+
+def replay_to_snapshots(cfg, events, *, interval=100, warmup_s=0):
+    """Replay → FeatureSnapshots only. No labeling, no dataset."""
+    book = OrderBook(cfg)
+    fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
+    sink = SnapshotSink()
+    sink._horizon = interval
+    engine = ReplayEngine(
+        data_path=Path("/unused"), order_book=book, feature_extractor=fe,
+        label_builder=sink, dataset_builder=LabelSink(), warmup_seconds=warmup_s,
+    )
+    _feed_events(engine, events)
+    return engine, sink.snapshots, book
+
+
+def replay_to_labels(cfg, events, *, interval=100, horizon=200, warmup_s=0):
+    """Replay → LabelledSnapshots. No dataset filtering."""
+    book = OrderBook(cfg)
+    fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
+    lb = LabelBuilder(horizon_ms=horizon, sampling_interval_ms=interval)
+    sink = LabelSink()
+    engine = ReplayEngine(
+        data_path=Path("/unused"), order_book=book, feature_extractor=fe,
+        label_builder=lb, dataset_builder=sink, warmup_seconds=warmup_s,
+    )
+    _feed_events(engine, events)
+    return engine, sink.labelled, book
+
+
+def replay_to_dataset(cfg, events, *, interval=100, horizon=200, warmup_s=0):
+    """Replay → full pipeline → DatasetBuilder DataFrame."""
+    book = OrderBook(cfg)
+    fe = FeatureExtractor(sampling_interval_ms=interval, trade_window_ms=1000)
+    lb = LabelBuilder(horizon_ms=horizon, sampling_interval_ms=interval)
+    db = DatasetBuilder()
+    engine = ReplayEngine(
+        data_path=Path("/unused"), order_book=book, feature_extractor=fe,
+        label_builder=lb, dataset_builder=db, warmup_seconds=warmup_s,
+    )
+    _feed_events(engine, events)
+    return engine, db, book
