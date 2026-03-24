@@ -66,7 +66,9 @@ def main() -> None:
         "warmup_s": args.warmup,
         "tick_size": str(cfg.tick_size),
         "step_size": str(cfg.step_size),
-        "rows": len(db),
+        "rows_seen": db.rows_seen,
+        "rows_kept": len(db),
+        "rows_dropped_missing_required": db.rows_dropped_missing_required,
         "sequence_gaps": engine.sequence_gaps_detected,
         "bootstrap_count": engine.bootstrap_count,
     }

@@ -44,6 +44,8 @@ class DatasetBuilder:
     def __init__(self) -> None:
         self._rows: list[dict] = []
         self._prev_ts: int | None = None
+        self.rows_seen: int = 0
+        self.rows_dropped_missing_required: int = 0
 
     def __len__(self) -> int:
         return len(self._rows)
@@ -55,6 +57,7 @@ class DatasetBuilder:
     def on_labelled_snapshot(self, labelled: LabelledSnapshot) -> None:
         """Extract features, validate, and append a row."""
         snap = labelled.snapshot
+        self.rows_seen += 1
 
         # Validate strictly increasing timestamps (snapshots are on distinct grid nodes).
         assert self._prev_ts is None or snap.timestamp > self._prev_ts, (
@@ -64,6 +67,7 @@ class DatasetBuilder:
 
         # Drop rows where any required feature is None.
         if any(getattr(snap, f) is None for f in _REQUIRED_FEATURES):
+            self.rows_dropped_missing_required += 1
             return
 
         row = {
