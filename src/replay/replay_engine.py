@@ -110,13 +110,14 @@ class ReplayEngine:
         self.bootstrap_count: int = 0
         self._next_grid: Optional[int] = None
         self._warmup_end_ts: Optional[int] = None
+        self._warmup_start_ts: Optional[int] = None
         self._trade_buffer: deque[Trade] = deque()
         self._event_count: int = 0
         self.sequence_gaps_detected: int = 0
 
     # --- state transitions ---------------------------------------------------
 
-    def _bootstrap_from_snapshot(self, data: dict) -> None:
+    def _bootstrap_from_snapshot(self, recv_ts: int, data: dict) -> None:
         """WAIT_SNAPSHOT → WARMING (or LIVE if warmup_ms == 0)."""
         self._book.apply_snapshot({"bids": data["bids"], "asks": data["asks"]})
         self._snapshot_update_id = int(data["lastUpdateId"])
@@ -124,14 +125,15 @@ class ReplayEngine:
         self.bootstrap_count += 1
         self._next_grid = None
         self._warmup_end_ts = None
+        self._warmup_start_ts = None
         self._fe.reset()
         self._lb.reset()
         self._db.reset_timestamp()
         self._trade_buffer.clear()
         self.state = LIVE if self._warmup_ms == 0 else WARMING
         logger.info(
-            "Bootstrap #%d from snapshot lastUpdateId=%d → %s",
-            self.bootstrap_count, self._snapshot_update_id, self.state,
+            "Bootstrap #%d at %s → %s",
+            self.bootstrap_count, _ts_fmt(recv_ts), self.state,
         )
 
     def _transition_to_wait_snapshot(self, reason: str) -> None:
@@ -152,9 +154,10 @@ class ReplayEngine:
         """WARMING → LIVE when grid timestamp reaches warmup deadline."""
         if self.state == WARMING and grid_ts >= self._warmup_end_ts:
             self.state = LIVE
+            duration_s = (grid_ts - self._warmup_start_ts) / 1000
             logger.info(
-                "Warmup complete at %s (%s events processed)",
-                _ts_fmt(grid_ts), fmt_count(self._event_count),
+                "Warmup complete at %s (%.1fs warmup)",
+                _ts_fmt(grid_ts), duration_s,
             )
 
     # --- replay loop ---------------------------------------------------------
@@ -182,7 +185,7 @@ class ReplayEngine:
     def process_event(self, recv_ts: int, event_type: str, data: dict) -> None:
         """Process a single event. Used by run() and available for testing."""
         if event_type == EVENT_DEPTH_SNAPSHOT:
-            self._bootstrap_from_snapshot(data)
+            self._bootstrap_from_snapshot(recv_ts, data)
         elif event_type == EVENT_TRADE:
             self._on_trade(recv_ts, data)
         elif event_type == EVENT_DEPTH_UPDATE:
@@ -275,6 +278,7 @@ class ReplayEngine:
         # 4. Initialize grid and warmup deadline on first depth after snapshot.
         if self._next_grid is None:
             self._next_grid = recv_ts - (recv_ts % self._interval)
+            self._warmup_start_ts = self._next_grid
             self._warmup_end_ts = self._next_grid + self._warmup_ms
 
     def _emit(self, snap: FeatureSnapshot) -> None:
