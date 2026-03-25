@@ -4,4 +4,5 @@ __pycache__/
 *.egg-info/
 /data/
 CLAUDE.md
-PROJECT_CONTEXT.md
+/reports/
+.DS_Store
