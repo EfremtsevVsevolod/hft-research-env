@@ -24,6 +24,7 @@ import websockets
 
 from .constants import EVENT_DEPTH_SNAPSHOT, EVENT_DEPTH_UPDATE, EVENT_TRADE
 from .recorder import Recorder
+from src.utils import fmt_count
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,10 @@ class BinanceStream:
         self._msg_count = 0
         self._depth_count = 0
         self._trade_count = 0
+        self._period_msgs = 0
+        self._latency_sum = 0
+        self._latency_count = 0
+        self._start_ts = time.monotonic()
         self._last_stats_ts = time.monotonic()
 
         # Sequence tracking
@@ -280,18 +285,34 @@ class BinanceStream:
         )
 
         self._msg_count += 1
+        self._period_msgs += 1
         if event_type == EVENT_DEPTH_UPDATE:
             self._depth_count += 1
         elif event_type == EVENT_TRADE:
             self._trade_count += 1
+        if exchange_ts > 0:
+            self._latency_sum += recv_ts - exchange_ts
+            self._latency_count += 1
 
         now = time.monotonic()
         if now - self._last_stats_ts >= self._stats_interval_s:
+            dt = now - self._last_stats_ts
+            elapsed = now - self._start_ts
+            h, rem = divmod(int(elapsed), 3600)
+            m, s = divmod(rem, 60)
+            rate = self._period_msgs / dt if dt > 0 else 0
+            avg_lat = (self._latency_sum / self._latency_count
+                       if self._latency_count > 0 else 0)
             logger.info(
-                "received %d msgs (depth: %d, trade: %d), buffer: %d",
-                self._msg_count,
-                self._depth_count,
-                self._trade_count,
-                len(self._recorder),
+                "%02d:%02d:%02d | %s msgs (%s depth, %s trade)"
+                " | %.0f msg/s | latency %dms",
+                h, m, s,
+                fmt_count(self._msg_count),
+                fmt_count(self._depth_count),
+                fmt_count(self._trade_count),
+                rate, avg_lat,
             )
             self._last_stats_ts = now
+            self._period_msgs = 0
+            self._latency_sum = 0
+            self._latency_count = 0

@@ -21,6 +21,12 @@ async def run(args: argparse.Namespace) -> None:
     symbol = args.symbol.upper()
     output_dir = Path(args.output_dir or f"data/raw/binance/{symbol}")
 
+    if output_dir.exists() and any(output_dir.iterdir()) and not args.append:
+        raise SystemExit(
+            f"Output directory is not empty: {output_dir}\n"
+            f"Use --append to write into an existing directory."
+        )
+
     recorder = Recorder(
         base_dir=output_dir,
         flush_every_events=args.flush_every_events,
@@ -48,6 +54,8 @@ def main() -> None:
         "--output-dir", default=None,
         help="Output directory (default: data/raw/binance/<SYMBOL>)",
     )
+    parser.add_argument("--append", action="store_true",
+                        help="Allow writing into a non-empty directory")
     parser.add_argument("--flush-every-events", type=int, default=20000)
     parser.add_argument("--flush-every-seconds", type=int, default=10)
     args = parser.parse_args()

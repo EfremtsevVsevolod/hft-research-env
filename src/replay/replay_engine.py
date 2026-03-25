@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import deque
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -30,12 +31,19 @@ from typing import Optional
 import pandas as pd
 
 from src.data.constants import EVENT_DEPTH_SNAPSHOT, EVENT_DEPTH_UPDATE, EVENT_TRADE
+from src.utils import fmt_count
 from src.dataset.dataset import DatasetBuilder
 from src.lob.features import FeatureExtractor, FeatureSnapshot, Trade
 from src.lob.labels import LabelBuilder
 from src.lob.orderbook import OrderBook
 
 logger = logging.getLogger(__name__)
+
+
+def _ts_fmt(ms: int) -> str:
+    """Format epoch-ms timestamp as human-readable UTC string."""
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
 
 # Replay states
 WAIT_SNAPSHOT = "WAIT_SNAPSHOT"
@@ -145,8 +153,8 @@ class ReplayEngine:
         if self.state == WARMING and grid_ts >= self._warmup_end_ts:
             self.state = LIVE
             logger.info(
-                "Warmup complete at grid_ts=%d (%d events processed)",
-                grid_ts, self._event_count,
+                "Warmup complete at %s (%s events processed)",
+                _ts_fmt(grid_ts), fmt_count(self._event_count),
             )
 
     # --- replay loop ---------------------------------------------------------
@@ -166,9 +174,9 @@ class ReplayEngine:
                 self.process_event(int(row.recv_ts), row.event_type, json.loads(row.payload_json))
 
         logger.info(
-            "Replay finished: %d events, %d dataset rows, %d sequence gaps, %d bootstraps",
-            self._event_count, len(self._db), self.sequence_gaps_detected,
-            self.bootstrap_count,
+            "Replay finished: %s events, %s dataset rows, %d sequence gaps, %d bootstraps",
+            fmt_count(self._event_count), fmt_count(len(self._db)),
+            self.sequence_gaps_detected, self.bootstrap_count,
         )
 
     def process_event(self, recv_ts: int, event_type: str, data: dict) -> None:
@@ -184,8 +192,9 @@ class ReplayEngine:
         self._event_count += 1
         if self._event_count % 100_000 == 0:
             logger.info(
-                "Processed %d events, recv_ts=%d, dataset rows=%d",
-                self._event_count, recv_ts, len(self._db),
+                "Processed %s events, %s, %s dataset rows",
+                fmt_count(self._event_count), _ts_fmt(recv_ts),
+                fmt_count(len(self._db)),
             )
 
     # --- event handlers ------------------------------------------------------
