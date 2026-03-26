@@ -30,8 +30,7 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=100, help="Sampling interval ms (default: 100)")
     parser.add_argument("--horizon", type=int, default=200, help="Label horizon ms (default: 200)")
     parser.add_argument("--trade-window", type=int, default=1000, help="Trade window ms (default: 1000)")
-    parser.add_argument("--start", type=str, default=None, help="Start time matching raw file naming (e.g. '2026-03-24', '2026-03-24 12:00')")
-    parser.add_argument("--duration", type=str, default=None, help="Use only this much data (e.g. '4h', '1d')")
+    parser.add_argument("--duration", type=str, default=None, help="Use only this much data from the start (e.g. '4h', '1d')")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output file")
     args = parser.parse_args()
 
@@ -51,7 +50,6 @@ def main() -> None:
     lb = LabelBuilder(horizon_ms=args.horizon, sampling_interval_ms=args.interval)
     db = DatasetBuilder()
 
-    start_ts_ms = int(pd.Timestamp(args.start, tz="UTC").timestamp() * 1000) if args.start else None
     duration_ms = int(pd.Timedelta(args.duration).total_seconds() * 1000) if args.duration else None
 
     engine = ReplayEngine(
@@ -61,7 +59,6 @@ def main() -> None:
         label_builder=lb,
         dataset_builder=db,
         warmup_seconds=args.warmup,
-        start_ts_ms=start_ts_ms,
         duration_ms=duration_ms,
     )
     engine.run()

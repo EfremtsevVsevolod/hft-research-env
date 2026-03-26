@@ -85,7 +85,6 @@ class ReplayEngine:
         label_builder: LabelBuilder,
         dataset_builder: DatasetBuilder,
         warmup_seconds: int = 0,
-        start_ts_ms: Optional[int] = None,
         duration_ms: Optional[int] = None,
     ) -> None:
         self._data_path = Path(data_path)
@@ -95,7 +94,6 @@ class ReplayEngine:
         self._db = dataset_builder
         self._interval = feature_extractor.interval
         self._warmup_ms = warmup_seconds * 1000
-        self._start_ts_ms = start_ts_ms
         self._duration_ms = duration_ms
         assert label_builder.horizon % feature_extractor.interval == 0, (
             f"label horizon ({label_builder.horizon}ms) must be a multiple of "
@@ -167,12 +165,12 @@ class ReplayEngine:
     # --- file filtering ------------------------------------------------------
 
     def _filter_files(self, files: list[Path]) -> list[Path]:
-        """Select files within [start_ts, start_ts + duration) window.
+        """Select first N files covering the duration window from the start.
 
         Timestamps are parsed from filenames. Files whose names do not match
         the expected ``YYYYMMdd_HHMMSS`` pattern are silently skipped.
         """
-        if self._start_ts_ms is None and self._duration_ms is None:
+        if self._duration_ms is None:
             return files
 
         parsed = [(f, parse_filename_ts(f)) for f in files]
@@ -180,16 +178,15 @@ class ReplayEngine:
         if not valid:
             return []
 
-        start_ts = self._start_ts_ms if self._start_ts_ms is not None else valid[0][1]
-        end_ts = start_ts + self._duration_ms if self._duration_ms is not None else None
+        origin_ts = valid[0][1]
+        end_ts = origin_ts + self._duration_ms
 
-        result = [f for f, ts in valid if ts >= start_ts and (end_ts is None or ts < end_ts)]
+        result = [f for f, ts in valid if ts < end_ts]
 
         logger.info(
             "File filter: %d/%d files selected (%s .. %s)",
             len(result), len(files),
-            _ts_fmt(start_ts),
-            _ts_fmt(end_ts) if end_ts is not None else "unbounded",
+            _ts_fmt(origin_ts), _ts_fmt(end_ts),
         )
         return result
 
