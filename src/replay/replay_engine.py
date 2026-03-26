@@ -31,7 +31,7 @@ from typing import Optional
 import pandas as pd
 
 from src.data.constants import EVENT_DEPTH_SNAPSHOT, EVENT_DEPTH_UPDATE, EVENT_TRADE
-from src.utils import fmt_count
+from src.utils import fmt_count, parse_filename_ts
 from src.dataset.dataset import DatasetBuilder
 from src.lob.features import FeatureExtractor, FeatureSnapshot, Trade
 from src.lob.labels import LabelBuilder
@@ -85,6 +85,8 @@ class ReplayEngine:
         label_builder: LabelBuilder,
         dataset_builder: DatasetBuilder,
         warmup_seconds: int = 0,
+        start_offset_ms: int = 0,
+        duration_ms: Optional[int] = None,
     ) -> None:
         self._data_path = Path(data_path)
         self._book = order_book
@@ -93,6 +95,8 @@ class ReplayEngine:
         self._db = dataset_builder
         self._interval = feature_extractor.interval
         self._warmup_ms = warmup_seconds * 1000
+        self._start_offset_ms = start_offset_ms
+        self._duration_ms = duration_ms
         assert label_builder.horizon % feature_extractor.interval == 0, (
             f"label horizon ({label_builder.horizon}ms) must be a multiple of "
             f"sampling interval ({feature_extractor.interval}ms)"
@@ -160,6 +164,36 @@ class ReplayEngine:
                 _ts_fmt(grid_ts), duration_s,
             )
 
+    # --- file filtering ------------------------------------------------------
+
+    def _filter_files(self, files: list[Path]) -> list[Path]:
+        """Select files within [start_offset, start_offset + duration) window.
+
+        Timestamps are parsed from filenames. Files whose names do not match
+        the expected ``YYYYMMdd_HHMMSS`` pattern are silently skipped.
+        """
+        if self._start_offset_ms == 0 and self._duration_ms is None:
+            return files
+
+        parsed = [(f, parse_filename_ts(f)) for f in files]
+        valid = [(f, ts) for f, ts in parsed if ts is not None]
+        if not valid:
+            return []
+
+        origin_ts = valid[0][1]
+        start_ts = origin_ts + self._start_offset_ms
+        end_ts = start_ts + self._duration_ms if self._duration_ms is not None else None
+
+        result = [f for f, ts in valid if ts >= start_ts and (end_ts is None or ts < end_ts)]
+
+        logger.info(
+            "File filter: %d/%d files selected (offset %s, duration %s)",
+            len(result), len(files),
+            _ts_fmt(start_ts),
+            _ts_fmt(end_ts) if end_ts is not None else "unbounded",
+        )
+        return result
+
     # --- replay loop ---------------------------------------------------------
 
     def run(self) -> None:
@@ -167,6 +201,11 @@ class ReplayEngine:
         files = sorted(self._data_path.glob("*.parquet"))
         if not files:
             logger.warning("No parquet files found in %s", self._data_path)
+            return
+
+        files = self._filter_files(files)
+        if not files:
+            logger.warning("No files remaining after time filter")
             return
 
         logger.info("Replaying %d parquet files from %s", len(files), self._data_path)

@@ -11,6 +11,8 @@ import argparse
 import logging
 from pathlib import Path
 
+import pandas as pd
+
 from src.config.config import fetch_symbol_config
 from src.dataset.dataset import DatasetBuilder
 from src.lob.features import FeatureExtractor
@@ -28,6 +30,8 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=100, help="Sampling interval ms (default: 100)")
     parser.add_argument("--horizon", type=int, default=200, help="Label horizon ms (default: 200)")
     parser.add_argument("--trade-window", type=int, default=1000, help="Trade window ms (default: 1000)")
+    parser.add_argument("--start-offset", type=str, default=None, help="Skip this much data from the start (e.g. '2h', '30min')")
+    parser.add_argument("--duration", type=str, default=None, help="Use only this much data (e.g. '4h', '1d')")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output file")
     args = parser.parse_args()
 
@@ -47,6 +51,9 @@ def main() -> None:
     lb = LabelBuilder(horizon_ms=args.horizon, sampling_interval_ms=args.interval)
     db = DatasetBuilder()
 
+    start_offset_ms = int(pd.Timedelta(args.start_offset).total_seconds() * 1000) if args.start_offset else 0
+    duration_ms = int(pd.Timedelta(args.duration).total_seconds() * 1000) if args.duration else None
+
     engine = ReplayEngine(
         data_path=args.data_path,
         order_book=book,
@@ -54,6 +61,8 @@ def main() -> None:
         label_builder=lb,
         dataset_builder=db,
         warmup_seconds=args.warmup,
+        start_offset_ms=start_offset_ms,
+        duration_ms=duration_ms,
     )
     engine.run()
 
