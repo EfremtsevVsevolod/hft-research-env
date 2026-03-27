@@ -13,15 +13,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
-
-def _load(path: Path) -> tuple[pd.DataFrame, dict[str, str]]:
-    table = pq.read_table(path)
-    raw = table.schema.metadata or {}
-    meta = {k.decode(): v.decode() for k, v in raw.items() if k != b"pandas"}
-    df = table.to_pandas()
-    return df, meta
+from src.analysis.io import load_dataset_with_meta
 
 
 def _section(title: str) -> None:
@@ -49,8 +42,8 @@ def main() -> None:
             print(f"FAIL: file not found: {path}")
             sys.exit(1)
 
-    df_old, meta_old = _load(args.old)
-    df_new, meta_new = _load(args.new)
+    df_old, meta_old = load_dataset_with_meta(args.old)
+    df_new, meta_new = load_dataset_with_meta(args.new)
 
     # --- dataset info ---
     for label, df, path in [("Old", df_old, args.old), ("New", df_new, args.new)]:

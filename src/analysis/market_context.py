@@ -14,9 +14,9 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 from tqdm.auto import tqdm
 
+from src.analysis.io import load_dataset_with_meta  # noqa: F401
 from src.config.config import SymbolConfig
 from src.data.constants import EVENT_DEPTH_SNAPSHOT, EVENT_DEPTH_UPDATE, EVENT_TRADE
 from src.lob.orderbook import OrderBook
@@ -226,24 +226,56 @@ def replay_book_samples(
 
 
 # ---------------------------------------------------------------------------
-# Dataset loading
+# Research helpers
 # ---------------------------------------------------------------------------
 
-def load_dataset_with_meta(path: Path | str) -> tuple[pd.DataFrame, dict]:
-    """Load a built dataset parquet with its metadata.
+def attach_segment_id(df: pd.DataFrame, interval_ms: int) -> pd.DataFrame:
+    """Add a ``segment_id`` column based on timestamp gaps.
 
-    Returns (DataFrame, metadata_dict).  Metadata keys/values are decoded
-    strings.  The DataFrame gets an added 'datetime' column.
+    A new segment starts whenever the gap between consecutive timestamps
+    exceeds *interval_ms*.  Mutates *df* in place and returns it.
     """
-    path = Path(path)
-    table = pq.read_table(path)
-    df = table.to_pandas()
-    meta = {}
-    if table.schema.metadata:
-        meta = {
-            k.decode(): v.decode()
-            for k, v in table.schema.metadata.items()
-            if not k.startswith(b"pandas") and not k.startswith(b"ARROW")
-        }
-    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    return df, meta
+    gaps = df["timestamp"].diff() > interval_ms
+    df["segment_id"] = gaps.cumsum()
+    return df
+
+
+def label_profile(df: pd.DataFrame, label_col: str = "label") -> pd.Series:
+    """Return a compact summary of the label distribution."""
+    lbl = df[label_col]
+    n = len(lbl)
+    return pd.Series({
+        "count": n,
+        "mean": lbl.mean(),
+        "std": lbl.std(),
+        "min": lbl.min(),
+        "p5": lbl.quantile(0.05),
+        "p25": lbl.quantile(0.25),
+        "median": lbl.median(),
+        "p75": lbl.quantile(0.75),
+        "p95": lbl.quantile(0.95),
+        "max": lbl.max(),
+        "zero_pct": (lbl == 0).mean(),
+        "pos_pct": (lbl > 0).mean(),
+        "neg_pct": (lbl < 0).mean(),
+    })
+
+
+def dataset_summary_row(df: pd.DataFrame, meta: dict) -> pd.Series:
+    """Return one summary row/Series — handy for comparing datasets."""
+    lbl = df["label"]
+    return pd.Series({
+        "rows": len(df),
+        "interval_ms": meta.get("interval_ms", ""),
+        "horizon_ms": meta.get("horizon_ms", ""),
+        "warmup_s": meta.get("warmup_s", ""),
+        "trade_window_ms": meta.get("trade_window_ms", ""),
+        "label_mean": lbl.mean(),
+        "label_std": lbl.std(),
+        "label_median": lbl.median(),
+        "label_zero_pct": (lbl == 0).mean(),
+        "label_pos_pct": (lbl > 0).mean(),
+        "label_neg_pct": (lbl < 0).mean(),
+        "bootstrap_count": meta.get("bootstrap_count", ""),
+        "sequence_gaps": meta.get("sequence_gaps", ""),
+    })

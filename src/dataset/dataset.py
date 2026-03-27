@@ -7,24 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.dataset.schema import DATASET_COLUMNS, REQUIRED_FEATURE_COLUMNS
 from src.lob.labels import LabelledSnapshot
-
-# Columns included in the dataset (order matters).
-_COLUMNS = [
-    "timestamp",
-    "spread",
-    "imbalance_1",
-    "imbalance_5",
-    "imbalance_10",
-    "microprice_minus_mid",
-    "delta_midprice",
-    "buy_volume",
-    "sell_volume",
-    "label",
-]
-
-# FeatureSnapshot fields that are Optional — row is dropped if any is None.
-_REQUIRED_FEATURES = ("spread", "microprice_minus_mid", "delta_midprice")
 
 
 class DatasetBuilder:
@@ -66,7 +50,7 @@ class DatasetBuilder:
         self._prev_ts = snap.timestamp
 
         # Drop rows where any required feature is None.
-        if any(getattr(snap, f) is None for f in _REQUIRED_FEATURES):
+        if any(getattr(snap, f) is None for f in REQUIRED_FEATURE_COLUMNS):
             self.rows_dropped_missing_required += 1
             return
 
@@ -91,7 +75,7 @@ class DatasetBuilder:
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return accumulated rows as a DataFrame."""
-        return pd.DataFrame(self._rows, columns=_COLUMNS)
+        return pd.DataFrame(self._rows, columns=DATASET_COLUMNS)
 
     def save_parquet(self, path: Path, metadata: dict | None = None) -> None:
         """Save the dataset to a Parquet file with optional metadata."""
