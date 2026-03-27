@@ -16,7 +16,6 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from src.analysis.io import load_dataset_with_meta  # noqa: F401
 from src.config.config import SymbolConfig
 from src.data.constants import EVENT_DEPTH_SNAPSHOT, EVENT_DEPTH_UPDATE, EVENT_TRADE
 from src.lob.orderbook import OrderBook
@@ -229,15 +228,13 @@ def replay_book_samples(
 # Research helpers
 # ---------------------------------------------------------------------------
 
-def attach_segment_id(df: pd.DataFrame, interval_ms: int) -> pd.DataFrame:
-    """Add a ``segment_id`` column based on timestamp gaps.
+def attach_segment_id(df: pd.DataFrame, interval_ms: int) -> None:
+    """Add a ``segment_id`` column to *df* in place.
 
     A new segment starts whenever the gap between consecutive timestamps
-    exceeds *interval_ms*.  Mutates *df* in place and returns it.
+    exceeds *interval_ms*.
     """
-    gaps = df["timestamp"].diff() > interval_ms
-    df["segment_id"] = gaps.cumsum()
-    return df
+    df["segment_id"] = (df["timestamp"].diff() > interval_ms).cumsum()
 
 
 def label_profile(df: pd.DataFrame, label_col: str = "label") -> pd.Series:
@@ -270,7 +267,7 @@ def dataset_summary_row(df: pd.DataFrame, meta: dict) -> pd.Series:
         "horizon_ms": meta.get("horizon_ms", ""),
         "warmup_s": meta.get("warmup_s", ""),
         "trade_window_ms": meta.get("trade_window_ms", ""),
-        "label_mean": lbl.mean(),
+        "label_abs_mean": lbl.abs().mean(),
         "label_std": lbl.std(),
         "label_median": lbl.median(),
         "label_zero_pct": (lbl == 0).mean(),
