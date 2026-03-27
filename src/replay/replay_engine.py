@@ -115,6 +115,7 @@ class ReplayEngine:
         self._warmup_start_ts: Optional[int] = None
         self._trade_buffer: deque[Trade] = deque()
         self._event_count: int = 0
+        self._header_printed: bool = False
         self.sequence_gaps_detected: int = 0
 
     # --- state transitions ---------------------------------------------------
@@ -137,6 +138,7 @@ class ReplayEngine:
             "Bootstrap #%d at %s → %s",
             self.bootstrap_count, _ts_fmt(recv_ts), self.state,
         )
+        self._header_printed = False
 
     def _transition_to_wait_snapshot(self, reason: str) -> None:
         """Any state → WAIT_SNAPSHOT on invalid continuity."""
@@ -161,6 +163,7 @@ class ReplayEngine:
                 "Warmup complete at %s (%.1fs warmup)",
                 _ts_fmt(grid_ts), duration_s,
             )
+            self._header_printed = False
 
     # --- file filtering ------------------------------------------------------
 
@@ -229,8 +232,11 @@ class ReplayEngine:
             raise ValueError(f"Unknown event type: {event_type}")
         self._event_count += 1
         if self._event_count % 100_000 == 0:
+            if not self._header_printed:
+                logger.info("%-10s  %-19s  %-10s", "events", "data_time", "rows")
+                self._header_printed = True
             logger.info(
-                "Processed %s events, %s, %s dataset rows",
+                "%-10s  %-19s  %-10s",
                 fmt_count(self._event_count), _ts_fmt(recv_ts),
                 fmt_count(len(self._db)),
             )
