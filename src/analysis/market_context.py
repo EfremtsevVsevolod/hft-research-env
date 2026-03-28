@@ -261,12 +261,21 @@ def label_profile(df: pd.DataFrame, label_col: str = "label") -> pd.Series:
 def dataset_summary_row(df: pd.DataFrame, meta: dict) -> pd.Series:
     """Return one summary row/Series — handy for comparing datasets."""
     lbl = df["label"]
+    ts = df["timestamp"]
+    interval_ms = int(meta.get("interval_ms", 100))
+    gaps = ts.diff()
+    seg_ids = (gaps > interval_ms).cumsum()
     return pd.Series({
         "rows": len(df),
-        "interval_ms": meta.get("interval_ms", ""),
-        "horizon_ms": meta.get("horizon_ms", ""),
+        "interval_ms": int(meta.get("interval_ms", "")),
+        "horizon_ms": int(meta.get("horizon_ms", "")),
         "warmup_s": meta.get("warmup_s", ""),
         "trade_window_ms": meta.get("trade_window_ms", ""),
+        "start": pd.Timestamp(int(ts.iloc[0]), unit="ms", tz="UTC") if len(ts) else None,
+        "end": pd.Timestamp(int(ts.iloc[-1]), unit="ms", tz="UTC") if len(ts) else None,
+        "duration_s": (int(ts.iloc[-1]) - int(ts.iloc[0])) / 1000.0 if len(ts) else 0,
+        "max_gap_ms": gaps.max() if len(ts) > 1 else 0,
+        "segment_count": int(seg_ids.iloc[-1]) + 1 if len(ts) else 0,
         "label_abs_mean": lbl.abs().mean(),
         "label_std": lbl.std(),
         "label_median": lbl.median(),
