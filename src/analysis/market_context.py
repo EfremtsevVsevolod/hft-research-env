@@ -242,6 +242,7 @@ def label_profile(df: pd.DataFrame, label_col: str = "label") -> pd.Series:
     lbl = df[label_col]
     n = len(lbl)
     return pd.Series({
+        "column": label_col,
         "count": n,
         "mean": lbl.mean(),
         "std": lbl.std(),
