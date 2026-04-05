@@ -2,7 +2,7 @@
 """Build an ML dataset by replaying recorded Binance events.
 
 Usage:
-    python scripts/replay_dataset.py data/raw/binance/BTCUSDT_v2 --symbol BTCUSDT --output data/datasets/binance/BTCUSDT_v2/dataset_v1.parquet
+    python scripts/replay_dataset.py data/raw/binance/BTCUSDT_v2 --symbol BTCUSDT --duration 4D --horizon 200 --output_folder data/datasets/binance/BTCUSDT_v2 --output_base_name dataset
 """
 
 from __future__ import annotations
@@ -25,12 +25,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Replay raw Binance data to build ML dataset")
     parser.add_argument("data_path", type=Path, help="Directory with recorded Parquet files")
     parser.add_argument("--symbol", required=True, help="Symbol name (e.g. BTCUSDT)")
-    parser.add_argument("--output", type=Path, help="Output Parquet path")
+    parser.add_argument("--output_folder", type=Path, required=True, help="Output folder for Parquet path")
+    parser.add_argument("--output_base_name", type=str, required=True, help="Output base name for Parquet path")
     parser.add_argument("--warmup", type=int, default=600, help="Feature warmup seconds after bootstrap (default: 600)")
     parser.add_argument("--interval", type=int, default=100, help="Sampling interval ms (default: 100)")
-    parser.add_argument("--horizon", type=int, default=200, help="Label horizon ms (default: 200)")
-    parser.add_argument("--trade-window", type=int, default=1000, help="Trade window ms (default: 1000)")
-    parser.add_argument("--duration", type=str, default=None, help="Use only this much data from the start (e.g. '4h', '1d')")
+    parser.add_argument("--horizon", type=int, default=500, help="Label horizon ms (default: 500)")
+    parser.add_argument("--trade_window", type=int, default=1000, help="Trade window ms (default: 1000)")
+    parser.add_argument("--duration", type=str, default=None, help="Use only this much data from the start (e.g. '4h', '1D')")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output file")
     args = parser.parse_args()
 
@@ -39,10 +40,16 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.output.exists() and not args.overwrite:
-        raise SystemExit(f"Output file already exists: {args.output}\nUse --overwrite to replace.")
+    duration_tag = f"_d{args.duration}" if args.duration else ""
+    output_path = args.output_folder / (
+        f'{args.output_base_name}{duration_tag}'
+        f'_i{args.interval}_tw{args.trade_window}_w{args.warmup}_h{args.horizon}.parquet'
+    )
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists() and not args.overwrite:
+        raise SystemExit(f"Output file already exists: {output_path}\nUse --overwrite to replace.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     cfg = fetch_symbol_config(args.symbol)
 
     book = OrderBook(cfg)
@@ -78,8 +85,8 @@ def main() -> None:
         "sequence_gaps": engine.sequence_gaps_detected,
         "bootstrap_count": engine.bootstrap_count,
     }
-    db.save_parquet(args.output, metadata=metadata)
-    logging.getLogger(__name__).info("Saved %d rows to %s", len(db), args.output)
+    db.save_parquet(output_path, metadata=metadata)
+    logging.getLogger(__name__).info("Saved %d rows to %s", len(db), output_path)
 
 
 if __name__ == "__main__":
