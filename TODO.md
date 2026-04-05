@@ -25,7 +25,7 @@
 ## High priority
 
 - [ ] **First ML model** — Short-horizon midprice prediction baseline
-- [ ] **Record new data with snapshots** — Old recordings without snapshots are incompatible. Record fresh data using updated recorder.
+- [x] **Record new data with snapshots** — Old recordings without snapshots are incompatible. Record fresh data using updated recorder.
 
 ## Normal
 
@@ -33,6 +33,7 @@
 - [ ] Explore larger horizons (500ms, 1s) for label with fewer zeros
 - [ ] Performance benchmarks (events/sec throughput)
 - [ ] Cross-stream ordering safety margin for trades
+- [ ] Synchronize time horizon for raw data and dataset in research notebook
 
 ## Low priority
 
