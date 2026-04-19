@@ -133,12 +133,19 @@ class ReplayEngine:
         self._lb.reset()
         self._db.reset_timestamp()
         self._trade_buffer.clear()
+        self._seed_observe_depth(recv_ts)
         self.state = LIVE if self._warmup_ms == 0 else WARMING
         logger.info(
             "Bootstrap #%d at %s → %s",
             self.bootstrap_count, _ts_fmt(recv_ts), self.state,
         )
         self._header_printed = False
+
+    def _seed_observe_depth(self, ts: int) -> None:
+        """Record snapshot L1 as the observe_depth baseline (no flow emitted)."""
+        bb, ba = self._book.best_bid(), self._book.best_ask()
+        bq, aq = self._book.volume_at_best()
+        self._fe.observe_depth(ts, bb, bq, ba, aq)
 
     def _transition_to_wait_snapshot(self, reason: str) -> None:
         """Any state → WAIT_SNAPSHOT on invalid continuity."""
@@ -316,7 +323,14 @@ class ReplayEngine:
             self._transition_to_wait_snapshot("Crossed book detected")
             return
 
-        # 4. Initialize grid and warmup deadline on first depth after snapshot.
+        # 4. Feed per-update observer with the post-apply L1 state.
+        #    Causal: this observation timestamp is recv_ts, and the data
+        #    it reads is the book at recv_ts (inclusive of this update).
+        bb, ba = self._book.best_bid(), self._book.best_ask()
+        bq, aq = self._book.volume_at_best()
+        self._fe.observe_depth(recv_ts, bb, bq, ba, aq)
+
+        # 5. Initialize grid and warmup deadline on first depth after snapshot.
         if self._next_grid is None:
             self._next_grid = recv_ts - (recv_ts % self._interval)
             self._warmup_start_ts = self._next_grid

@@ -23,6 +23,14 @@ def _snap(ts: int, midprice: Optional[Decimal] = Decimal("100.00")) -> FeatureSn
         delta_midprice=None if midprice is None else Decimal("0"),
         buy_volume=Decimal("0"),
         sell_volume=Decimal("0"),
+        ofi_100ms=0.0,
+        ofi_500ms=0.0,
+        ofi_1000ms=0.0,
+        queue_delta_diff_1000ms=0.0,
+        depth_update_count_1000ms=0,
+        time_since_last_mid_move_ms=0,
+        signed_trade_volume_1000ms=Decimal("0"),
+        realized_vol_microprice_1000ms=0.0,
     )
 
 

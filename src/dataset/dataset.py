@@ -64,6 +64,14 @@ class DatasetBuilder:
             "delta_midprice": float(snap.delta_midprice),
             "buy_volume": float(snap.buy_volume),
             "sell_volume": float(snap.sell_volume),
+            "ofi_100ms": snap.ofi_100ms,
+            "ofi_500ms": snap.ofi_500ms,
+            "ofi_1000ms": snap.ofi_1000ms,
+            "queue_delta_diff_1000ms": snap.queue_delta_diff_1000ms,
+            "depth_update_count_1000ms": snap.depth_update_count_1000ms,
+            "time_since_last_mid_move_ms": snap.time_since_last_mid_move_ms,
+            "signed_trade_volume_1000ms": float(snap.signed_trade_volume_1000ms),
+            "realized_vol_microprice_1000ms": float(snap.realized_vol_microprice_1000ms),
             "label": float(labelled.label),
         }
 

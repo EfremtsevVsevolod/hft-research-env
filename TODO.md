@@ -26,6 +26,8 @@
 
 - [ ] **First ML model** — Short-horizon midprice prediction baseline
 - [x] **Record new data with snapshots** — Old recordings without snapshots are incompatible. Record fresh data using updated recorder.
+- [x] **Compact microstructure feature pack** — OFI (3 scales), queue_delta_diff, depth_update_count, time_since_last_mid_move, signed_trade_volume, realized_vol_microprice. Added observe_depth hook in FeatureExtractor, wired through ReplayEngine.
+- [x] **Economic taker evaluation notebook** — `notebooks/economically_meaningful_target_evaluation.ipynb`. 3-class bps target (2/4/6), Ridge(old)/Ridge(new)/Ridge(old+new) ablation, fee-proxy sweep (5/8/10 bps). Result on v3 (h2000/5000/10000, 1/1/1 UTC day split): best test mean signed move ≈ 1.17 bps at 5 % coverage — far below fee scale, setup not close to taker viability.
 
 ## Normal
 

@@ -39,6 +39,56 @@ def _default_snapshot(recv_ts=50, last_update_id=0):
                      [("100.00", "1.00")], [("100.02", "1.00")])
 
 
+# --- observe_depth integration ----------------------------------------------
+
+class TestObserveDepthWiring:
+    """End-to-end: observe_depth values show up in emitted snapshots."""
+
+    def test_ofi_and_queue_delta_from_real_updates(self, cfg):
+        """A same-price bid add must register as positive OFI and queue-delta."""
+        events = [
+            _snapshot(50, 10, [("100.00", "1.00")], [("100.02", "1.00")]),
+            # First update: bid qty 1.00 → 5.00 (same price) = +400 lots flow.
+            _depth(100, 11, [("100.00", "5.00")], [], U=11),
+            _depth(200, 12, [], []),
+            _depth(300, 13, [], []),
+            _depth(400, 14, [], []),
+        ]
+        _, snaps, _ = replay_to_snapshots(cfg, events, interval=50)
+        # First emitted grid after warmup (warmup=100ms in tests) is t=200.
+        first = snap_at(snaps, 200)
+        assert first.ofi_100ms == 400.0
+        assert first.queue_delta_diff_1000ms == 400.0
+        # Depth-update count at t=200 in the 1000ms window. Grid at t=200 is
+        # emitted during a LATER depth event's processing (emit-before-apply),
+        # so all observations at ts ≤ 200 are already recorded:
+        # seed@50, update@100, update@200 → count = 3.
+        assert first.depth_update_count_1000ms == 3
+
+    def test_observe_resets_on_rebootstrap(self, cfg):
+        """After sequence gap + new snapshot, OFI state must be cleared."""
+        events = [
+            _snapshot(50, 10, [("100.00", "1.00")], [("100.02", "1.00")]),
+            _depth(100, 11, [("100.00", "9.00")], [], U=11),
+            # Gap: expected 12, got 50 → WAIT_SNAPSHOT
+            _depth(150, 50, [], [], U=50),
+            # New snapshot, fresh book; different price level.
+            _snapshot(200, 100, [("50.00", "1.00")], [("50.02", "1.00")]),
+            _depth(250, 101, [("50.00", "2.00")], [], U=101),
+            _depth(350, 102, [], []),
+            _depth(450, 103, [], []),
+        ]
+        _, snaps, _ = replay_to_snapshots(cfg, events, interval=50)
+        # After re-bootstrap, first emitted snapshot carries only post-reset OFI.
+        post_reset = [s for s in snaps if s.timestamp >= 300]
+        assert post_reset, "expected at least one post-reset snapshot"
+        # +100 flow at t=250 (1.00 → 2.00 lots = 100 lots). 1000ms window
+        # definitely includes it; pre-gap +800 flow must NOT leak through.
+        s = snap_at(post_reset, 350)
+        assert s.queue_delta_diff_1000ms == 100.0
+        assert s.ofi_1000ms == 100.0  # the pre-gap +800 was cleared on reset
+
+
 # --- bootstrap: snapshot initialization and sync ----------------------------
 
 class TestBootstrap:
